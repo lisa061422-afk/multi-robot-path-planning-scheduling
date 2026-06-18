@@ -200,9 +200,11 @@ def demo_2x2() -> None:
         #
         # This demonstrates a non-shortest path choice reducing total cost
         # even when lambda_path = 1.0.
-        (1, 2, 5, 0.0),
-        (2, 2, 6, 0.0),
+        # (1, 2, 5, 0.0), #0618 example.
+        # (2, 2, 6, 0.0),
         # (3, 6, 4, 0.0),
+        (1, 2, 5, 0.0),  # N1: P2 -> P5  #0618_2
+        (2, 6, 3, 0.0),  # N2: P6 -> P3
         # Previous 3-vehicle example:
         # (1, 2, 7, 0.0, [1, 4]),
         # (3, 1, 4, 0.0, [1, 2]),
