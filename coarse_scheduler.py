@@ -890,8 +890,20 @@ def _dynamic_path_choice_children(
     *,
     lambda_path: float,
 ) -> List[RelaxedNode]:
+    simultaneous_choices: List[
+        Tuple[
+            int,
+            RelaxedVehiclePlan,
+            Tuple[int, ...],
+            List[Tuple[Tuple[int, int, str, str, int, float, str], Tuple[int, ...], float]],
+        ]
+    ] = []
+
     for n, plan in enumerate(plans):
-        if c.r[n] > EPS or c.d[n] > EPS:
+        if c.r[n] > EPS:
+            continue
+        allow_pre_entry_choice = c.ni[n] == 0
+        if c.d[n] > EPS and not allow_pre_entry_choice:
             continue
         candidates = c.route_candidates[n]
         task_index0 = c.ni[n]
@@ -901,16 +913,36 @@ def _dynamic_path_choice_children(
         if len(groups) <= 1:
             continue
 
-        children: List[RelaxedNode] = []
-        for sig, selected_candidates in sorted(
-            groups.items(),
-            key=lambda item: (_dynamic_path_extra(plan, candidates, item[1]), item[0]),
-            reverse=True,
+        options = [
+            (
+                sig,
+                selected_candidates,
+                _dynamic_path_extra(plan, candidates, selected_candidates),
+            )
+            for sig, selected_candidates in sorted(
+                groups.items(),
+                key=lambda item: (_dynamic_path_extra(plan, candidates, item[1]), item[0]),
+                reverse=True,
+            )
+        ]
+        simultaneous_choices.append((n, plan, candidates, options))
+
+    if not simultaneous_choices:
+        return []
+
+    children: List[RelaxedNode] = []
+    option_products = itertools.product(*(item[3] for item in simultaneous_choices))
+    for product in option_products:
+        route_candidates = [tuple(items) for items in c.route_candidates]
+        path_decisions = list(c.path_decisions)
+        total_extra = 0.0
+
+        for (n, plan, _candidates, _options), (sig, selected_candidates, extra) in zip(
+            simultaneous_choices,
+            product,
         ):
-            extra = _dynamic_path_extra(plan, candidates, selected_candidates)
-            route_candidates = [tuple(items) for items in c.route_candidates]
+            total_extra += extra
             route_candidates[n] = selected_candidates
-            path_decisions = list(c.path_decisions)
             decision = _dynamic_path_decision(
                 plan.vehicle_id,
                 min(selected_candidates) + 1,
@@ -919,19 +951,21 @@ def _dynamic_path_choice_children(
             )
             if decision is not None:
                 path_decisions.append(decision)
-            children.append(
-                replace(
-                    c,
-                    idx=-1,
-                    parent=c.idx,
-                    g=c.g + lambda_path * extra,
-                    g_path=c.g_path + extra,
-                    route_candidates=tuple(route_candidates),
-                    path_decisions=tuple(path_decisions),
-                )
+
+        children.append(
+            replace(
+                c,
+                idx=-1,
+                parent=c.idx,
+                g=c.g + lambda_path * total_extra,
+                g_path=c.g_path + total_extra,
+                route_candidates=tuple(route_candidates),
+                path_decisions=tuple(path_decisions),
             )
-        return children
-    return []
+        )
+
+    children.sort(key=lambda node: node.g, reverse=True)
+    return children
 
 
 def _dynamic_current_requests(
@@ -1188,7 +1222,20 @@ def _expand_dynamic_codesign_node(
     c = nodes[c_idx]
     path_children = _dynamic_path_choice_children(c, plans, lambda_path=lambda_path)
     if path_children:
-        return path_children, False
+        merged_children: List[RelaxedNode] = []
+        for path_child in path_children:
+            temp_node = replace(path_child, idx=c.idx, parent=c.parent)
+            next_children, is_leaf = _expand_dynamic_codesign_node(
+                (temp_node,),
+                0,
+                plans,
+                lambda_path=lambda_path,
+            )
+            if is_leaf:
+                merged_children.append(replace(temp_node, idx=-1, parent=c.idx))
+            else:
+                merged_children.extend(next_children)
+        return merged_children, False
 
     n_vehicle = len(plans)
     da = [math.inf for _ in plans]

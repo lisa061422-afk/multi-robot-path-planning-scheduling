@@ -47,7 +47,7 @@ The main switches are inside `demo_2x2()`.
 ```python
 enable_path_selection = True
 show_all_branches = True
-use_parallel_dynamic = True
+use_parallel_dynamic = False
 parallel_frontier_depth = 2
 parallel_max_workers = 4
 lambda_path = 1.0
@@ -58,14 +58,15 @@ Recommended default while debugging the code and inspecting the full tree:
 ```python
 enable_path_selection = True
 show_all_branches = True
-use_parallel_dynamic = True
+use_parallel_dynamic = False
 parallel_frontier_depth = 2
 parallel_max_workers = 4
 lambda_path = 1.0
 ```
 
-This runs true dynamic co-design with parallel subtree DFS and keeps all
-branches for visualization.
+This runs true dynamic co-design in one process and keeps all branches for
+visualization. It is much easier to debug manually because breakpoints and local
+variables stay in the main Python process.
 
 Recommended default for larger experiments:
 
@@ -113,21 +114,14 @@ Use this for the real algorithm:
 
 ```python
 enable_path_selection = True
-use_parallel_dynamic = True
+use_parallel_dynamic = False
 show_all_branches = True
 ```
 
 Then the code calls:
 
 ```python
-search_dynamic_codesign_parallel_dfs_bb(
-    relaxed_plans,
-    lambda_path=lambda_path,
-    frontier_depth=parallel_frontier_depth,
-    max_workers=parallel_max_workers,
-    branch_and_bound=not show_all_branches,
-    verbose=True,
-)
+search_dynamic_codesign_dfs_bb(...)
 ```
 
 This is different from the old relaxed solver.
@@ -222,6 +216,18 @@ This is now implemented as:
 
 ```python
 search_dynamic_codesign_parallel_dfs_bb(...)
+```
+
+Use it when the algorithm logic is stable:
+
+```python
+use_parallel_dynamic = True
+```
+
+Keep it off when manually debugging:
+
+```python
+use_parallel_dynamic = False
 ```
 
 ## 8. Recommended Parallel Parameters

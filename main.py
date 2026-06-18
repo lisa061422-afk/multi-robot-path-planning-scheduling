@@ -175,7 +175,7 @@ def demo_2x2() -> None:
     fixed_route_policy = "shortest"  # "manual_or_shortest" or "shortest"
     lambda_path = 1.0
     show_all_branches = True
-    use_parallel_dynamic = True
+    use_parallel_dynamic = False  # True is faster but harder to debug manually.
     parallel_frontier_depth = 2
     parallel_max_workers = 4
     full_tree_vehicle_count = 3
@@ -201,8 +201,8 @@ def demo_2x2() -> None:
         # This demonstrates a non-shortest path choice reducing total cost
         # even when lambda_path = 1.0.
         (1, 2, 5, 0.0),
-        # (2, 2, 6, 0.0),
-        (3, 6, 4, 0.0),
+        (2, 2, 6, 0.0),
+        # (3, 6, 4, 0.0),
         # Previous 3-vehicle example:
         # (1, 2, 7, 0.0, [1, 4]),
         # (3, 1, 4, 0.0, [1, 2]),
