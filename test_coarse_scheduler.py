@@ -10,6 +10,7 @@ from coarse_scheduler import (
     search_parallel_dfs_bb,
     search_dfs_bb,
 )
+from resource_schedulers import CoarseIntersectionScheduler, FiveSpaceScheduler
 from traffic_map import TrafficMap
 
 
@@ -143,6 +144,21 @@ class CoarseSchedulerTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(parallel.best_g, serial.best_g)
+
+    def test_scheduler_facade_matches_serial_baseline(self):
+        tmap = TrafficMap.paper_2x2()
+        plans = [
+            build_vehicle_plan(tmap, vehicle_id=1, entrance=1, exit=5),
+            build_vehicle_plan(tmap, vehicle_id=2, entrance=2, exit=6),
+        ]
+
+        direct = search_dfs_bb(plans, verbose=False)
+        via_facade = CoarseIntersectionScheduler().schedule_fixed(plans, verbose=False)
+
+        self.assertEqual(CoarseIntersectionScheduler().name, "coarse_intersection")
+        self.assertAlmostEqual(via_facade.best_g, direct.best_g)
+        with self.assertRaises(NotImplementedError):
+            FiveSpaceScheduler().schedule_fixed(plans, verbose=False)
 
 
 if __name__ == "__main__":

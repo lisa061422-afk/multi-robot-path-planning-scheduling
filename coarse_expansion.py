@@ -12,7 +12,7 @@ import itertools
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from coarse_scheduler import (
+from scheduler_models import (
     BIG_M,
     EPS,
     AttemptSegment,

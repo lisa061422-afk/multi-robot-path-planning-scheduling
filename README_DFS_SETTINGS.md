@@ -293,3 +293,42 @@ The serial version is still available for debugging:
 ```python
 search_dynamic_codesign_dfs_bb(...)
 ```
+
+## 10. Scheduler/Resource-Model Boundary
+
+The code now keeps the stable scheduler data shapes in:
+
+```text
+scheduler_models.py
+```
+
+The swappable scheduler facade lives in:
+
+```text
+resource_schedulers.py
+```
+
+For the first RL environment, depend on:
+
+```python
+from resource_schedulers import CoarseIntersectionScheduler
+```
+
+This keeps the environment coupled to a small interface instead of directly to
+the large `coarse_scheduler.py` implementation.  The current baseline is:
+
+```text
+CoarseIntersectionScheduler
+    each intersection is one conservative resource
+```
+
+The future CDC-style model is reserved as:
+
+```text
+FiveSpaceScheduler
+    each intersection is divided into conflict spaces
+```
+
+`FiveSpaceScheduler` is intentionally a placeholder for now.  It should fill
+the same fixed-path and path-selection scheduling methods so the RL environment
+can switch resource models without changing its observation/action plumbing.
