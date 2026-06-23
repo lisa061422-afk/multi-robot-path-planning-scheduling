@@ -136,7 +136,7 @@ class RelaxedNode:
     alpha: Tuple[Tuple[float, ...], ...] = ()
     gamma: Tuple[Tuple[float, ...], ...] = ()
     priority_queues: Tuple[Tuple[int, Tuple[int, ...]], ...] = ()
-    path_decisions: Tuple[Tuple[int, int, int, int, float], ...] = ()
+    path_decisions: Tuple[Tuple[int, int, int, int, float, float], ...] = ()
 
 
 @dataclass(frozen=True)

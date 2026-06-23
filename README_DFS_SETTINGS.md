@@ -42,10 +42,13 @@ none of its children can become better.
 
 ## 2. Main Parameters in `main.py`
 
-The main switches are inside `demo_2x2()`.
+The main switches are inside `demo_fixed_map()`.
 
 ```python
+fixed_map = "paper_3x3"          # "paper_2x2" or "paper_3x3"
 enable_path_selection = True
+use_baseline_path_filter = False # show all enumerated path-selection options
+keep_min_hop_route_options = True
 show_all_branches = True
 use_parallel_dynamic = False
 parallel_frontier_depth = 2
@@ -53,10 +56,19 @@ parallel_max_workers = 4
 lambda_path = 1.0
 ```
 
+`lambda_path = 1.0` means one second of extra travel time has the same weight
+as one second of scheduling delay.
+
+`fixed_map` and `show_all_branches` are intentionally independent. Use
+`fixed_map` only to choose the map, and use `show_all_branches` only to choose
+whether to draw/search the full tree for debugging.
+
 Recommended default while debugging the code and inspecting the full tree:
 
 ```python
 enable_path_selection = True
+use_baseline_path_filter = False
+keep_min_hop_route_options = True
 show_all_branches = True
 use_parallel_dynamic = False
 parallel_frontier_depth = 2
@@ -66,12 +78,14 @@ lambda_path = 1.0
 
 This runs true dynamic co-design in one process and keeps all branches for
 visualization. It is much easier to debug manually because breakpoints and local
-variables stay in the main Python process.
+variables stay in the main Python process. Keep this for small cases only.
 
 Recommended default for larger experiments:
 
 ```python
 enable_path_selection = True
+use_baseline_path_filter = True
+keep_min_hop_route_options = True
 show_all_branches = False
 use_parallel_dynamic = True
 parallel_frontier_depth = 2
@@ -139,7 +153,61 @@ branch at that `tw`.
 
 This supports larger maps where path choices happen in the middle of the route.
 
-## 5. How to Turn Pruning On or Off
+## 5. Baseline Upper-Bound Path Filter
+
+This optional filter is controlled by:
+
+```python
+use_baseline_path_filter = False  # validation/visualization default
+use_baseline_path_filter = True   # larger-experiment pruning mode
+keep_min_hop_route_options = True
+```
+
+When enabled, `main.py` first solves a feasible shortest-path fixed scheduling
+case:
+
+```python
+J_ub = shortest_path_delay_upper_bound(...)
+```
+
+Then it filters each vehicle's route options before co-design:
+
+```text
+keep path p if lambda_path * (T_p - T_shortest) <= J_ub
+```
+
+The current demo also keeps all minimum-hop route options:
+
+```python
+keep_min_hop_route_options = True
+```
+
+This makes the viewer and training candidate set retain same-intersection-count
+paths, even when different turn sequences make their free-flow costs slightly
+larger than the fastest route.
+
+The upper-bound pruning rule is safe because `J_ub` is the true cost of a
+feasible incumbent solution, not an estimate. The optimum must satisfy:
+
+```text
+J_star <= J_ub
+```
+
+Any single route option whose path-extra penalty already exceeds `J_ub` cannot
+appear in a globally better solution, even if it eliminates all future delay.
+The `keep_min_hop_route_options` setting deliberately relaxes this display/training
+candidate set so that equal-hop route choices are still visible.
+
+To recover the original full candidate set:
+
+```python
+use_baseline_path_filter = False
+```
+
+This is the setting to use when you want to debug whether the filter is hiding a
+route from the visualization.
+
+## 6. How to Turn Pruning On or Off
 
 Pruning on:
 
@@ -170,7 +238,7 @@ Use pruning on for actual experiments.
 Use pruning off only when you want to visually inspect every branch in a small
 toy example.
 
-## 6. Old Parallel Relaxed Solver
+## 7. Old Parallel Relaxed Solver
 
 There is an older function:
 
@@ -188,7 +256,7 @@ It is no longer exposed as a switch in `main.py`.
 
 Do not use it as the main co-design result for 3x3 or larger maps.
 
-## 7. Correct Parallel DFS for Dynamic Co-Design
+## 8. Correct Parallel DFS for Dynamic Co-Design
 
 The correct parallel strategy is:
 
@@ -230,7 +298,7 @@ Keep it off when manually debugging:
 use_parallel_dynamic = False
 ```
 
-## 8. Recommended Parallel Parameters
+## 9. Recommended Parallel Parameters
 
 The dynamic parallel function uses this interface:
 
@@ -271,7 +339,7 @@ max_workers = 4
     process parallelism can consume memory quickly.
 ```
 
-## 9. Current Implementation Status
+## 10. Current Implementation Status
 
 Implemented:
 
@@ -279,6 +347,8 @@ Implemented:
 fixed-path DFS + branch-and-bound
 dynamic path-selection co-design DFS + branch-and-bound
 dynamic path-selection co-design parallel DFS
+baseline upper-bound route-candidate filtering
+paper_3x3 fixed training map
 legacy full-path-combination relaxed parallel baseline
 ```
 
@@ -294,7 +364,52 @@ The serial version is still available for debugging:
 search_dynamic_codesign_dfs_bb(...)
 ```
 
-## 10. Scheduler/Resource-Model Boundary
+Current correctness checks:
+
+```bash
+python -m unittest test_traffic_map.py test_coarse_scheduler.py test_algorithm_examples.py
+```
+
+The most important current 3x3 test is:
+
+```text
+test_dynamic_codesign_matches_enumerated_route_choices_on_3x3
+```
+
+It compares the dynamic path-selection solver against the exhaustive
+full-route-combination baseline on the 3x3 map, then verifies no resource
+overlap and checks `J = delay + lambda_path * path_extra`.
+
+## 11. Interactive HTML Viewer
+
+The dynamic co-design HTML output is:
+
+```text
+output/relaxed_interactive_solution.html
+```
+
+Current viewer panels:
+
+```text
+Decision Tree
+Basic Map
+Vehicle Path Options
+Path Selection Branches
+Vehicle Path Branch Trees
+Schedule
+```
+
+`Path Selection Branches` is important for 3x3 and larger maps. It explicitly
+lists choices such as:
+
+```text
+N1, P1 -> P7, reached [I1], next choices I2 / I4
+```
+
+This table is separate from the terminal-path display. A terminal path count is
+not the same thing as the number of available route-choice branches.
+
+## 12. Scheduler/Resource-Model Boundary
 
 The code now keeps the stable scheduler data shapes in:
 
@@ -332,3 +447,93 @@ FiveSpaceScheduler
 `FiveSpaceScheduler` is intentionally a placeholder for now.  It should fill
 the same fixed-path and path-selection scheduling methods so the RL environment
 can switch resource models without changing its observation/action plumbing.
+
+## 13. Random Exact Validation
+
+Use this script to generate deterministic random small cases and check the
+current dynamic co-design solver:
+
+```bash
+python random_validation.py
+```
+
+Each completed case is printed immediately with its elapsed solver time and is
+also appended to:
+
+```text
+output/random_validation_times.csv
+```
+
+The timing CSV records:
+
+```text
+elapsed_seconds, optimal_cost, delay, path_extra
+```
+
+Each case also keeps an interactive HTML viewer:
+
+```text
+output/random_validation_html/case_XX.html
+```
+
+For larger multi-robot batches, the default case HTML is compact and only shows
+the selected optimal co-design schedule.  If you need the decision tree, use:
+
+```bash
+python random_validation.py --full-tree-html --max-terminal-paths 50
+```
+
+`--max-terminal-paths` limits how many terminal paths are drawn in the full tree.
+The optimal path is always included.
+
+The default run creates 30 cases, uses:
+
+```text
+map=paper_2x2
+search_dynamic_codesign_parallel_dfs_bb
+branch_and_bound=True
+frontier_depth=2
+max_workers=min(4, cpu_count)
+```
+
+and compares each answer against the exhaustive full-path-choice baseline:
+
+```text
+search_relaxed_parallel_dfs_bb
+```
+
+Default complexity caps:
+
+```text
+option_product <= 81
+max potential vehicles per resource <= 3
+max route-option visits per resource <= 8
+```
+
+These caps are for exact-search tractability, not physical feasibility.  With
+finite vehicles and finite routes, the one-resource scheduler normally has a
+finite feasible schedule; the practical problem is that the decision tree can
+grow combinatorially.  If a sampled case violates the caps, the script rejects
+it before solving and samples another case.
+
+For a quick run without the cross-check baseline:
+
+```bash
+python random_validation.py --no-baseline-compare
+```
+
+For a larger stress run, raise the caps carefully:
+
+```bash
+python random_validation.py --cases 100 --max-resource-vehicles 4
+```
+
+To explicitly include a larger map later:
+
+```bash
+python random_validation.py --maps paper_2x2,grid_3x3
+```
+
+Use `--deadline` or `--max-nodes` only as a watchdog.  If either cutoff is hit,
+the script treats the result as incomplete because it is only best-so-far, not
+an exact optimum.

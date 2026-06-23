@@ -1,6 +1,7 @@
 import os
 import sys
 import webbrowser
+from dataclasses import replace
 from pathlib import Path
 
 from coarse_scheduler import (
@@ -22,6 +23,9 @@ from coarse_scheduler import (
     write_resource_schedule_svgs,
 )
 from traffic_map import TrafficMap
+
+
+EPS = 1e-9
 
 
 def make_vehicle_plans(
@@ -135,6 +139,80 @@ def make_relaxed_vehicle_plans(
     return plans
 
 
+def route_free_time(route, *, road_time: float) -> float:
+    return sum(route.execution_times) + len(route.edges) * road_time
+
+
+def shortest_path_delay_upper_bound(
+    tmap: TrafficMap,
+    vehicle_requests: list[tuple],
+    *,
+    Dt: float,
+    T_headway: float,
+    fixed_route_policy: str = "shortest",
+) -> float:
+    """Return a feasible upper bound from shortest-path fixed scheduling."""
+
+    fixed_plans = make_vehicle_plans(
+        tmap,
+        vehicle_requests,
+        Dt=Dt,
+        fixed_route_policy=fixed_route_policy,
+    )
+    fixed_plans = apply_entrance_headway(fixed_plans, headway=T_headway)
+    result = search_dfs_bb(
+        fixed_plans,
+        branch_and_bound=True,
+        verbose=False,
+    )
+    return result.best_g
+
+
+def filter_relaxed_plans_by_upper_bound(
+    relaxed_plans,
+    *,
+    lambda_path: float,
+    J_ub: float,
+    keep_min_hop_options: bool = False,
+):
+    """Remove route options that cannot beat a known feasible upper bound.
+
+    For each vehicle, the shortest/free-flow baseline path remains available.
+    Any alternative with lambda_path * (T_path - T_shortest) > J_ub cannot
+    appear in a globally better co-design solution because total delay savings
+    are bounded above by the feasible incumbent objective J_ub.
+
+    If keep_min_hop_options is true, every option with the minimum number of
+    intersections is retained for path-selection visualization/training, even
+    when turn costs make it slightly worse than the free-time shortest option.
+    """
+
+    filtered = []
+    for plan in relaxed_plans:
+        free_times = [
+            route_free_time(option, road_time=plan.road_time)
+            for option in plan.route_options
+        ]
+        base_time = min(free_times)
+        min_hops = min(len(option.intersections) for option in plan.route_options)
+        kept = tuple(
+            option
+            for option, free_time in zip(plan.route_options, free_times)
+            if (
+                lambda_path * max(0.0, free_time - base_time) <= J_ub + EPS
+                or (
+                    keep_min_hop_options
+                    and len(option.intersections) == min_hops
+                )
+            )
+        )
+        if not kept:
+            best_index = min(range(len(free_times)), key=free_times.__getitem__)
+            kept = (plan.route_options[best_index],)
+        filtered.append(replace(plan, route_options=kept))
+    return filtered
+
+
 def open_output_file(path: str | Path) -> bool:
     """Open a generated output file with the operating system default app."""
 
@@ -150,9 +228,73 @@ def open_output_file(path: str | Path) -> bool:
     return True
 
 
-def demo_2x2() -> None:
-    tmap = TrafficMap.paper_2x2()
-    svg_path = tmap.write_svg("output/paper_2x2_map.svg")
+def build_fixed_map(fixed_map: str) -> TrafficMap:
+    if fixed_map == "paper_2x2":
+        return TrafficMap.paper_2x2()
+    if fixed_map == "paper_3x3":
+        return TrafficMap.paper_3x3()
+    raise ValueError(f"unknown fixed_map: {fixed_map}")
+
+
+def default_vehicle_requests(fixed_map: str) -> list[tuple]:
+    if fixed_map == "paper_2x2":
+        return [
+            # Reproducible case: lambda=1 co-design advantage with only 3 vehicles.
+            #
+            # Map: TrafficMap.paper_2x2()
+            # Dt = 3.0, T_headway = 2.0, lambda_path = 1.0
+            # fixed_route_policy = "shortest"
+            #
+            # fixed-shortest:
+            #   N1 P2->P5: route (I1,I2,I3)
+            #   N2 P2->P6: route (I1,I2,I3)
+            #   N3 P6->P4: route (I3,I2)
+            #   J = total delay = 3.854
+            #
+            # relaxed co-design:
+            #   N1 P2->P5: route (I1,I4,I3), path_extra = +0.858
+            #   N2 P2->P6: route (I1,I4,I3)
+            #   N3 P6->P4: route (I3,I2)
+            #   delay = 0.000, path_extra = 0.858, J = 0.858
+            #
+            # This demonstrates a non-shortest path choice reducing total cost
+            # even when lambda_path = 1.0.
+            # (1, 2, 5, 0.0), #0618 example.
+            # (2, 2, 6, 0.0),
+            # (3, 6, 4, 0.0),
+            (1, 2, 5, 0.0),  # N1: P2 -> P5  #0618_2
+            (2, 6, 3, 0.0),  # N2: P6 -> P3
+            # Previous 3-vehicle example:
+            # (1, 2, 7, 0.0, [1, 4]),
+            # (3, 1, 4, 0.0, [1, 2]),
+            # (4, 5, 2, 0.0, [3, 4, 1]),
+            # (5, 5, 3, 0.0, [3, 2]),
+            # (6, 6, 3, 0.0, [3, 2]),
+            # (7, 6, 3, 0.0, [3, 2]),
+            # (8, 6, 5, 0.0, [3]),
+            # (9, 6, 8, 0.0, [3, 4]),
+            # (10, 6, 3, 0.0, [3, 2]),
+            # (11, 1, 4, 0.0, [1, 2]),
+            # (12, 1, 2, 0.0, [1]),
+            # (13, 1, 6, 0.0, [1, 2, 3]),
+        ]
+
+    if fixed_map == "paper_3x3":
+        return [
+            # 3x3 training case: P1->P7 has path choices after the start
+            # intersection, not only at the entrance.
+            # (1, 3, 6, 0.0),   
+            (2, 4, 8, 0.0),   
+            # (3, 12, 5, 0.0),  # I4 -> I3, cross traffic through the middle
+        ]
+
+    raise ValueError(f"unknown fixed_map: {fixed_map}")
+
+
+def demo_fixed_map() -> None:
+    fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3"
+    tmap = build_fixed_map(fixed_map)
+    svg_path = tmap.write_svg(f"output/{tmap.name}_map.svg")
 
     print(f"Map: {tmap.name}")
     print(f"Map drawing: {svg_path}")
@@ -174,51 +316,14 @@ def demo_2x2() -> None:
     )
     fixed_route_policy = "shortest"  # "manual_or_shortest" or "shortest"
     lambda_path = 1.0
+    use_baseline_path_filter = False
+    keep_min_hop_route_options = True
     show_all_branches = True
     use_parallel_dynamic = False  # True is faster but harder to debug manually.
     parallel_frontier_depth = 2
     parallel_max_workers = 4
     full_tree_vehicle_count = 3
-    vehicle_requests = [
-        # Reproducible case: lambda=1 co-design advantage with only 3 vehicles.
-        #
-        # Map: TrafficMap.paper_2x2()
-        # Dt = 3.0, T_headway = 2.0, lambda_path = 1.0
-        # fixed_route_policy = "shortest"
-        #
-        # fixed-shortest:
-        #   N1 P2->P5: route (I1,I2,I3)
-        #   N2 P2->P6: route (I1,I2,I3)
-        #   N3 P6->P4: route (I3,I2)
-        #   J = total delay = 3.854
-        #
-        # relaxed co-design:
-        #   N1 P2->P5: route (I1,I4,I3), path_extra = +0.858
-        #   N2 P2->P6: route (I1,I4,I3)
-        #   N3 P6->P4: route (I3,I2)
-        #   delay = 0.000, path_extra = 0.858, J = 0.858
-        #
-        # This demonstrates a non-shortest path choice reducing total cost
-        # even when lambda_path = 1.0.
-        # (1, 2, 5, 0.0), #0618 example.
-        # (2, 2, 6, 0.0),
-        # (3, 6, 4, 0.0),
-        (1, 2, 5, 0.0),  # N1: P2 -> P5  #0618_2
-        (2, 6, 3, 0.0),  # N2: P6 -> P3
-        # Previous 3-vehicle example:
-        # (1, 2, 7, 0.0, [1, 4]),
-        # (3, 1, 4, 0.0, [1, 2]),
-        # (4, 5, 2, 0.0, [3, 4, 1]),
-        # (5, 5, 3, 0.0, [3, 2]),
-        # (6, 6, 3, 0.0, [3, 2]),
-        # (7, 6, 3, 0.0, [3, 2]),
-        # (8, 6, 5, 0.0, [3]),
-        # (9, 6, 8, 0.0, [3, 4]),
-        # (10, 6, 3, 0.0, [3, 2]),
-        # (11, 1, 4, 0.0, [1, 2]),
-        # (12, 1, 2, 0.0, [1]),
-        # (13, 1, 6, 0.0, [1, 2, 3]),
-    ]
+    vehicle_requests = default_vehicle_requests(fixed_map)
 
     run_vehicle_requests = (
         vehicle_requests[:full_tree_vehicle_count]
@@ -285,6 +390,32 @@ def demo_2x2() -> None:
             run_vehicle_requests,
             Dt=Dt,
         )
+        if use_baseline_path_filter:
+            J_ub = shortest_path_delay_upper_bound(
+                tmap,
+                run_vehicle_requests,
+                Dt=Dt,
+                T_headway=T_headway,
+                fixed_route_policy="shortest",
+            )
+            before_counts = [len(plan.route_options) for plan in relaxed_plans]
+            relaxed_plans = filter_relaxed_plans_by_upper_bound(
+                relaxed_plans,
+                lambda_path=lambda_path,
+                J_ub=J_ub,
+                keep_min_hop_options=keep_min_hop_route_options,
+            )
+            after_counts = [len(plan.route_options) for plan in relaxed_plans]
+            print()
+            print(
+                "Baseline path filter: "
+                f"J_ub={J_ub:.3f}, lambda_path={lambda_path:.3f}, "
+                f"keep_min_hop={keep_min_hop_route_options}, "
+                f"route options {before_counts} -> {after_counts}"
+            )
+        else:
+            print()
+            print("Baseline path filter: disabled; using all route options")
         relaxed_plans = apply_relaxed_entrance_headway(
             relaxed_plans,
             headway=T_headway,
@@ -330,6 +461,7 @@ def demo_2x2() -> None:
             "output/relaxed_interactive_solution.html",
             plans=relaxed_plans,
             tmap=tmap,
+            lambda_path=lambda_path,
         )
         print(f"  interactive relaxed solution viewer: {interactive_path}")
         open_output_file(interactive_path)
@@ -406,6 +538,7 @@ def demo_2x2() -> None:
         "output/coarse_interactive_solution.html",
         plans=plans,
         tmap=tmap,
+        lambda_path=lambda_path,
     )
     panel_path = write_resource_schedule_panel_html(
         schedule_paths,
@@ -433,4 +566,4 @@ def demo_2x2() -> None:
 
 
 if __name__ == "__main__":
-    demo_2x2()
+    demo_fixed_map()

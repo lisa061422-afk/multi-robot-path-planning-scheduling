@@ -9,8 +9,10 @@ Current scope:
 - entrance/exit port generation;
 - fixed-path DFS scheduling baseline;
 - dynamic path-selection co-design DFS;
+- optional baseline-upper-bound path filtering before co-design;
 - dynamic parallel DFS using frontier subtrees;
-- interactive HTML visualization of decision trees, path DAGs, and schedules.
+- interactive HTML visualization of decision trees, maps, path options, path
+  selection branches, path DAGs, and schedules.
 
 ## Run
 
@@ -26,7 +28,38 @@ output/relaxed_interactive_solution.html
 
 ## Main Controls
 
-The main switches are in `demo_2x2()` inside `main.py`.
+The main switches are in `demo_fixed_map()` inside `main.py`.
+
+To choose the fixed training map:
+
+```python
+fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3"
+```
+
+`paper_2x2` keeps the original small example. `paper_3x3` adds the second
+typical fixed map, where OD pairs such as `P1 -> P7` have middle-route path
+selection after the entrance intersection.
+
+To enable or disable the current upper-bound route filter:
+
+```python
+use_baseline_path_filter = False  # show all enumerated path-selection options
+use_baseline_path_filter = True   # safe pruning by baseline upper bound
+keep_min_hop_route_options = True # keep all minimum-hop route choices visible
+```
+
+When enabled, the demo first solves the shortest-path fixed scheduling case to
+get a feasible upper bound `J_ub`. It then removes route options satisfying:
+
+```text
+lambda_path * (T_path - T_shortest) > J_ub
+```
+
+This is a safe path-candidate filter, not a heuristic node-count cutoff. Keep it
+off while validating the algorithm or inspecting path-selection structure. With
+`keep_min_hop_route_options = True`, every route with the minimum number of
+intersections is still retained, so same-hop path choices remain visible for
+training and inspection even when turn costs differ.
 
 For debugging with all branches visible:
 
@@ -50,6 +83,49 @@ More details are in:
 README_DFS_SETTINGS.md
 ```
 
+## Current 3x3 Demo Notes
+
+The default map is currently:
+
+```python
+fixed_map = "paper_3x3"
+lambda_path = 1.0
+use_baseline_path_filter = False
+keep_min_hop_route_options = True
+show_all_branches = True
+```
+
+The default 3x3 requests are defined in `default_vehicle_requests()`:
+
+```text
+N1: P2 -> P6
+N2: P1 -> P9
+# N3: P12 -> P5 is kept as a commented cross-traffic option
+```
+
+For `lambda_path = 1.0`, path-extra seconds and waiting-delay seconds have the
+same weight. In the current all-path-selection display mode, the demo prints:
+
+```text
+Baseline path filter: disabled; using all route options
+```
+
+## Interactive HTML Viewer
+
+`output/relaxed_interactive_solution.html` now includes:
+
+- a decision tree with wheel zoom and double-click reset;
+- a compact `Basic Map` with intersection indices and port locations;
+- a `Vehicle Path Options` table listing each vehicle's entrance, exit,
+  selected path, and candidate paths;
+- a `Path Selection Branches` table showing actual branch points such as
+  `[I1] -> I2 / I4`;
+- compact `Vehicle Path Branch Trees`, where only the selected path has green
+  arrows and grey alternatives stay unlabeled;
+- local schedule panels on the right.
+
+The default screen split is 3:1, with the left pane at 75%.
+
 ## Tests
 
 ```bash
@@ -57,4 +133,3 @@ python test_coarse_scheduler.py
 python test_traffic_map.py
 python test_algorithm_examples.py
 ```
-

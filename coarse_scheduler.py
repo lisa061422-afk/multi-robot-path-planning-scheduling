@@ -744,12 +744,13 @@ def _dynamic_path_decision(
     option_display: int,
     signature: Tuple[int, int, str, str, int, float, str],
     tw: float,
-) -> Optional[Tuple[int, int, int, int, float]]:
+    extra: float,
+) -> Optional[Tuple[int, int, int, int, float, float]]:
     from_i = signature[0]
     next_label = signature[6]
     if not next_label.startswith("I"):
         return None
-    return (vehicle_id, option_display, from_i, int(next_label[1:]), tw)
+    return (vehicle_id, option_display, from_i, int(next_label[1:]), tw, extra)
 
 
 def _dynamic_path_choice_children(
@@ -816,6 +817,7 @@ def _dynamic_path_choice_children(
                 min(selected_candidates) + 1,
                 sig,
                 c.tw,
+                extra,
             )
             if decision is not None:
                 path_decisions.append(decision)
@@ -1611,10 +1613,39 @@ def write_interactive_solution_html(
     *,
     plans: Sequence,
     tmap: Optional[TrafficMap] = None,
+    max_terminal_paths: Optional[int] = None,
+    lambda_path: float = 1.0,
 ) -> Path:
     p = _ensure_parent(path)
+    all_terminals = list(result.leaves) if result.leaves else [result.best_idx]
+    all_terminals = [idx for idx in all_terminals if idx >= 0]
+    node_by_idx = {node.idx: node for node in result.nodes}
+
+    selected_terminals = list(all_terminals)
+    if max_terminal_paths is not None and len(selected_terminals) > max_terminal_paths:
+        keep_count = max(1, int(max_terminal_paths))
+        best = result.best_idx
+        others = [idx for idx in selected_terminals if idx != best]
+        others = sorted(
+            others,
+            key=lambda idx: (getattr(node_by_idx[idx], "g", math.inf), idx),
+        )
+        selected_terminals = ([best] if best in node_by_idx else []) + others
+        selected_terminals = selected_terminals[:keep_count]
+        if best in node_by_idx and best not in selected_terminals:
+            selected_terminals[-1] = best
+
+    included = set()
+    for terminal in selected_terminals:
+        cur = terminal
+        while cur >= 0 and cur in node_by_idx and cur not in included:
+            included.add(cur)
+            cur = node_by_idx[cur].parent
+
     nodes = []
     for node in result.nodes:
+        if node.idx not in included:
+            continue
         nodes.append(
             {
                 "idx": node.idx,
@@ -1657,6 +1688,7 @@ def write_interactive_solution_html(
                         "from": f"I{item[2]}",
                         "to": f"I{item[3]}",
                         "tw": item[4],
+                        "extra": item[5] if len(item) > 5 else None,
                     }
                     for item in getattr(node, "path_decisions", ())
                 ],
@@ -1747,6 +1779,30 @@ def write_interactive_solution_html(
             )
 
     coords = {str(k): list(v) for k, v in (tmap.coords.items() if tmap else [])}
+    ports = (
+        [
+            {
+                "id": port.id,
+                "intersection": port.intersection,
+                "direction": port.direction,
+            }
+            for port in sorted(tmap.ports.values(), key=lambda item: item.id)
+        ]
+        if tmap
+        else []
+    )
+    roads = (
+        [
+            {
+                "id": road.id,
+                "a": road.endpoints[0],
+                "b": road.endpoints[1],
+            }
+            for road in sorted(tmap.roads.values(), key=lambda item: item.id)
+        ]
+        if tmap
+        else []
+    )
     resources = sorted(
         {
             seg.resource
@@ -1757,12 +1813,19 @@ def write_interactive_solution_html(
     )
     data = {
         "nodes": nodes,
-        "terminals": list(result.leaves) if result.leaves else [result.best_idx],
+        "terminals": selected_terminals,
+        "terminal_count_total": len(all_terminals),
+        "terminal_count_shown": len(selected_terminals),
+        "node_count_total": len(result.nodes),
+        "node_count_shown": len(nodes),
         "best_idx": result.best_idx,
         "plans": plan_data,
         "path_trees": path_trees,
         "coords": coords,
+        "ports": ports,
+        "roads": roads,
         "resources": resources,
+        "lambda_path": lambda_path,
     }
 
     data_json = json.dumps(data, ensure_ascii=False)
@@ -1781,16 +1844,30 @@ def write_interactive_solution_html(
     #meta {{ font-size:14px; font-weight:700; white-space:nowrap; }}
     .hint {{ color:#64748b; font-size:12px; margin-left:14px; }}
     .notation {{ color:#475569; font-size:12px; margin:-4px 12px 8px; }}
-    .layout {{ --left-pane:80%; display:grid; grid-template-columns:minmax(260px,var(--left-pane)) 8px minmax(340px,1fr); gap:8px; padding:12px; height:calc(100vh - 48px); box-sizing:border-box; }}
+    .layout {{ --left-pane:75%; display:grid; grid-template-columns:minmax(360px,var(--left-pane)) 8px minmax(300px,1fr); gap:8px; padding:12px; height:calc(100vh - 48px); box-sizing:border-box; }}
     .pane {{ background:white; border:1px solid #d1d5db; border-radius:6px; overflow:auto; }}
     .splitter {{ cursor:col-resize; border-radius:6px; background:linear-gradient(90deg, transparent 0 2px, #cbd5e1 2px 6px, transparent 6px 8px); }}
     .splitter:hover, .splitter.dragging {{ background:linear-gradient(90deg, transparent 0 2px, #64748b 2px 6px, transparent 6px 8px); }}
-    #treeSvg {{ width:100%; height:520px; display:block; cursor:grab; user-select:none; touch-action:none; }}
-    #treeSvg.dragging {{ cursor:grabbing; }}
+    #treeSvg {{ width:100%; height:520px; display:block; cursor:default; user-select:none; touch-action:pan-x pan-y; }}
+    #basicMapPanel {{ padding:0 10px 12px; display:grid; justify-items:start; }}
+    #basicMapPanel svg {{ display:block; max-width:100%; height:auto; }}
+    #pathSummaryPanel {{ padding:0 10px 10px; }}
+    .path-table {{ border-collapse:collapse; font-size:11px; min-width:720px; max-width:100%; margin-bottom:8px; }}
+    .path-table th, .path-table td {{ border:1px solid #d1d5db; padding:4px 6px; text-align:left; vertical-align:top; }}
+    .path-table th {{ background:#f1f5f9; font-weight:700; white-space:nowrap; }}
+    .path-table td:first-child, .path-table td:nth-child(2), .path-table td:nth-child(3) {{ white-space:nowrap; font-weight:700; }}
+    .path-list {{ display:flex; flex-wrap:wrap; gap:3px; }}
+    .path-pill {{ border:1px solid #cbd5e1; border-radius:4px; padding:2px 5px; background:#f8fafc; white-space:nowrap; display:inline-flex; gap:5px; align-items:baseline; }}
+    .path-pill.selected {{ border-color:#16a34a; background:#dcfce7; color:#166534; font-weight:700; }}
+    .path-cost {{ color:#475569; font-family:Consolas, monospace; font-size:10px; font-weight:600; }}
+    .path-pill.selected .path-cost {{ color:#166534; }}
+    .path-note {{ color:#475569; font-size:11px; margin:0 0 6px; }}
     #pathTreePanel {{ padding:0 10px 12px; display:grid; grid-template-columns:1fr; gap:8px; justify-items:start; }}
     .path-card {{ border:1px solid #d1d5db; border-radius:6px; padding:6px 8px; background:white; width:max-content; max-width:calc(100% - 18px); min-width:0; overflow:auto; }}
     .path-card h3 {{ font-size:10px; line-height:1.2; margin:0 0 4px; white-space:nowrap; }}
     .path-card svg {{ display:block; margin:0; max-width:100%; height:auto; }}
+    .path-card-visuals {{ display:grid; grid-template-columns:auto auto; gap:12px; align-items:start; }}
+    .path-visual-title {{ margin:0 0 3px; font-size:9px; font-weight:700; color:#475569; }}
     #schedulePanel {{ padding:10px; display:grid; grid-template-columns:1fr; gap:10px; }}
     .icard {{ border:1px solid #d1d5db; border-radius:6px; padding:7px 9px; background:white; }}
     .icard h3 {{ font-size:14px; }}
@@ -1800,7 +1877,7 @@ def write_interactive_solution_html(
 </head>
 <body>
   <header>
-    <div><h1>Interactive Coarse Solution</h1><div class="hint">Use Left/Right or Up/Down keys to switch tree paths. Wheel zooms the decision tree; drag pans; double-click resets.</div></div>
+    <div><h1>Interactive Coarse Solution</h1><div class="hint">Use Left/Right or Up/Down keys to switch tree paths. Wheel zooms the decision tree; double-click resets.</div></div>
     <div id="meta"></div>
   </header>
   <main class="layout" id="mainLayout">
@@ -1808,6 +1885,12 @@ def write_interactive_solution_html(
       <h2>Decision Tree</h2>
       <div class="notation">Notation: z<sub>nq</sub>(i,j)(tw) means vehicle Nn selects path option q from Ii to Ij at time tw; q is displayed from 1, while decision-tree node IDs start from 0. v<sub>in</sub>(tw) means vehicle Nn occupies Ii at time tw.</div>
       <svg id="treeSvg"></svg>
+      <h2>Basic Map</h2>
+      <div id="basicMapPanel"></div>
+      <h2>Vehicle Path Options</h2>
+      <div id="pathSummaryPanel"></div>
+      <h2>Path Selection Branches</h2>
+      <div id="pathBranchPanel"></div>
       <h2>Vehicle Path Branch Trees</h2>
       <div id="pathTreePanel"></div>
     </section>
@@ -1918,7 +2001,8 @@ def write_interactive_solution_html(
           option: decision.option,
           from: decision.from,
           to: decision.to,
-          tw: decision.tw
+          tw: decision.tw,
+          extra: decision.extra
         }});
       }}
       if (
@@ -1959,7 +2043,10 @@ def write_interactive_solution_html(
     function compactLabelText(label) {{
       if (label.type === "more") return `+${{label.count}} more`;
       if (label.type === "v") return `v${{label.resource}}${{label.vehicle}}(${{fmtTime(label.tw)}})`;
-      if (label.type === "z") return `z${{label.vehicle}}${{label.option}}(${{compactNode(label.from)}},${{compactNode(label.to)}})(${{fmtTime(label.tw)}})`;
+      if (label.type === "z") {{
+        const extra = Number.isFinite(Number(label.extra)) ? `,+${{Number(label.extra).toFixed(2)}}` : "";
+        return `z${{label.vehicle}}${{label.option}}(${{compactNode(label.from)}},${{compactNode(label.to)}})(${{fmtTime(label.tw)}}${{extra}})`;
+      }}
       return String(label);
     }}
 
@@ -2185,38 +2272,41 @@ def write_interactive_solution_html(
       return selected;
     }}
 
-    function optionLabels(pathTree, option) {{
-      return option.intersections.map(m => `I${{m}}`);
-    }}
-
-    function selectedOption(pathTree, optionIndex) {{
-      return pathTree.options[optionIndex] || pathTree.options[0] || null;
-    }}
-
-    function movementLabel(movement) {{
-      if (!movement) return "";
-      return `C=${{Number(movement.execution_time).toFixed(2)}}s`;
-    }}
-
-    function movementForEdge(pathTree, optionIndex, from, to) {{
-      const key = `${{from}}->${{to}}`;
-      const selected = selectedOption(pathTree, optionIndex);
-      if (selected && selected.movements) {{
-        const match = selected.movements.find(m => m.edge === key);
-        if (match) return {{movement: match, selected: true}};
-      }}
-      for (const option of pathTree.options) {{
-        for (const movement of (option.movements || [])) {{
-          if (movement.edge === key) return {{movement, selected: false}};
+    function activeDecisionEdges() {{
+      const selected = terminals[cursor];
+      const ids = pathTo(selected);
+      const active = new Set();
+      for (let k = 1; k < ids.length; k++) {{
+        const parent = nodeById.get(ids[k - 1]);
+        const child = nodeById.get(ids[k]);
+        if (!parent || !child) continue;
+        for (const label of edgeDecisionLabels(parent, child)) {{
+          if (label.type !== "z" || !label.from || !label.to) continue;
+          active.add(`${{label.vehicle}}|${{label.from}}->${{label.to}}`);
         }}
       }}
-      return null;
+      return active;
     }}
 
-    function terminalMovementForNode(pathTree, optionIndex, label) {{
-      const selected = selectedOption(pathTree, optionIndex);
-      if (!selected || !selected.movements) return null;
-      return selected.movements.find(m => m.node === label && String(m.next).startsWith("P")) || null;
+    function activeDecisionExtraByEdge() {{
+      const selected = terminals[cursor];
+      const ids = pathTo(selected);
+      const out = new Map();
+      for (let k = 1; k < ids.length; k++) {{
+        const parent = nodeById.get(ids[k - 1]);
+        const child = nodeById.get(ids[k]);
+        if (!parent || !child) continue;
+        for (const label of edgeDecisionLabels(parent, child)) {{
+          if (label.type !== "z" || !label.from || !label.to) continue;
+          const key = `${{label.vehicle}}|${{label.from}}->${{label.to}}`;
+          if (Number.isFinite(Number(label.extra))) out.set(key, Number(label.extra));
+        }}
+      }}
+      return out;
+    }}
+
+    function optionLabels(pathTree, option) {{
+      return option.intersections.map(m => `I${{m}}`);
     }}
 
     function branchExtraForEdge(pathTree, a, b) {{
@@ -2257,20 +2347,27 @@ def write_interactive_solution_html(
         }}
       }}
 
-      function edgeExtra(from, to) {{
-        if (!outTargets.has(from) || outTargets.get(from).size <= 1) return null;
+      const selectedOption = pathTree.options[optionIndex] || pathTree.options[0];
+      const selectedLabels = optionLabels(pathTree, selectedOption);
+
+      function selectedPrefixEdgeExtra(from, to) {{
+        const k = selectedLabels.findIndex((label, index) =>
+          label === from && selectedLabels[index + 1] === to
+        );
+        if (k < 0) return null;
+        const prefix = selectedLabels.slice(0, k + 1);
         const branchOptions = [];
         const edgeOptions = [];
         for (const option of pathTree.options) {{
           const labels = optionLabels(pathTree, option);
-          for (let k = 0; k < labels.length - 1; k++) {{
-            if (labels[k] !== from) continue;
-            branchOptions.push(option);
-            if (labels[k+1] === to) edgeOptions.push(option);
-            break;
-          }}
+          const prefixOk = prefix.every((label, index) => labels[index] === label);
+          if (!prefixOk || labels.length <= k + 1) continue;
+          branchOptions.push(option);
+          if (labels[k + 1] === to) edgeOptions.push(option);
         }}
         if (!branchOptions.length || !edgeOptions.length) return null;
+        const nextChoices = new Set(branchOptions.map(option => optionLabels(pathTree, option)[k + 1]));
+        if (nextChoices.size <= 1) return null;
         const branchBest = Math.min(...branchOptions.map(option => option.free_time));
         const edgeBest = Math.min(...edgeOptions.map(option => option.free_time));
         return Math.max(0, edgeBest - branchBest);
@@ -2303,7 +2400,6 @@ def write_interactive_solution_html(
       const displayH = Math.max(110, Math.min(240, displayW * h / Math.max(1, w)));
       const svg = el("svg", {{viewBox:`0 0 ${{w}} ${{h}}`, width:displayW, height:displayH}});
       const markerSelected = `pathArrowSelected${{pathTree.vehicle_id}}`;
-      const markerPlain = `pathArrowPlain${{pathTree.vehicle_id}}`;
       const defs = el("defs");
       const selectedMarker = el("marker", {{
         id:markerSelected,
@@ -2316,17 +2412,6 @@ def write_interactive_solution_html(
       }});
       selectedMarker.appendChild(el("path", {{d:"M 0 0 L 10 5 L 0 10 z", fill:"#16a34a"}}));
       defs.appendChild(selectedMarker);
-      const plainMarker = el("marker", {{
-        id:markerPlain,
-        viewBox:"0 0 10 10",
-        refX:"8.5",
-        refY:"5",
-        markerWidth:"4.5",
-        markerHeight:"4.5",
-        orient:"auto-start-reverse"
-      }});
-      plainMarker.appendChild(el("path", {{d:"M 0 0 L 10 5 L 0 10 z", fill:"#94a3b8"}}));
-      defs.appendChild(plainMarker);
       svg.appendChild(defs);
       for (const [key, [from, to]] of edgeMap.entries()) {{
         const [x1,y1] = pos.get(from);
@@ -2342,10 +2427,10 @@ def write_interactive_solution_html(
           y2:y2 - uy * 10,
           stroke:selectedEdge ? "#16a34a" : "#94a3b8",
           "stroke-width":selectedEdge ? 2 : 1,
-          "marker-end":`url(#${{selectedEdge ? markerSelected : markerPlain}})`
+          "marker-end":selectedEdge ? `url(#${{markerSelected}})` : "none"
         }}));
-        const extra = edgeExtra(from, to);
-        if (extra !== null) {{
+        const extra = selectedPrefixEdgeExtra(from, to);
+        if (selectedEdge && extra !== null) {{
           const lx = (x1 + x2) / 2;
           const ly = (y1 + y2) / 2 - 6;
           svg.appendChild(el("rect", {{
@@ -2364,21 +2449,6 @@ def write_interactive_solution_html(
             fill: extra > 1e-8 ? "#92400e" : "#166534"
           }}, `+${{extra.toFixed(2)}}s`));
         }}
-        const movementInfo = movementForEdge(pathTree, optionIndex, from, to);
-        if (movementInfo) {{
-          const movement = movementInfo.movement;
-          const lx = (x1 + x2) / 2;
-          const ly = (y1 + y2) / 2 + 7;
-          svg.appendChild(el("text", {{
-            x:lx, y:ly-2,
-            "text-anchor":"middle",
-            "dominant-baseline":"middle",
-            "font-family":"Arial",
-            "font-size":6,
-            "font-weight":700,
-            fill: movementInfo.selected ? "#1d4ed8" : "#475569"
-          }}, movementLabel(movement)));
-        }}
       }}
       for (const label of nodeLabels) {{
         if (!pos.has(label)) continue;
@@ -2387,33 +2457,344 @@ def write_interactive_solution_html(
         const isTerminal = !outTargets.has(label) && label.startsWith("I");
         svg.appendChild(el("circle", {{cx:x, cy:y, r:isBranch ? 9 : 8, fill:isTerminal ? "#fef3c7" : "#f8fafc", stroke:isBranch ? "#2563eb" : "#64748b", "stroke-width":isBranch ? 2 : 1}}));
         svg.appendChild(el("text", {{x, y:y+2, "text-anchor":"middle", "font-family":"Arial", "font-size":7, "font-weight":700}}, label));
-        const terminalMovement = terminalMovementForNode(pathTree, optionIndex, label);
-        if (terminalMovement) {{
+      }}
+      return svg;
+    }}
+
+    function expandedPathTreeSvg(pathTree, optionIndex, activeEdges=new Set(), activeExtraByEdge=new Map()) {{
+      const root = buildTrie(pathTree);
+      const flat = flattenTrie(root);
+      const selectedOption = pathTree.options[optionIndex] || pathTree.options[0];
+      const selectedLabels = selectedOption ? optionLabels(pathTree, selectedOption) : [];
+      const selected = new Set();
+      let previous = `P${{pathTree.entrance}}`;
+      for (const label of selectedLabels) {{
+        selected.add(`${{previous}}->${{label}}`);
+        previous = label;
+      }}
+
+      const leafOrder = new Map();
+      let leafIndex = 0;
+      function assignY(node) {{
+        if (!node.children.size) {{
+          leafOrder.set(node.id, leafIndex++);
+          return leafOrder.get(node.id);
+        }}
+        const childYs = [...node.children.values()].map(assignY);
+        const y = childYs.reduce((sum, item) => sum + item, 0) / childYs.length;
+        leafOrder.set(node.id, y);
+        return y;
+      }}
+      assignY(root);
+
+      const maxDepth = Math.max(...flat.nodes.map(node => node.depth), 1);
+      const xGap = 46;
+      const yGap = 24;
+      const margin = 18;
+      const width = margin * 2 + maxDepth * xGap;
+      const height = margin * 2 + Math.max(1, leafIndex - 1) * yGap;
+      const pos = new Map(flat.nodes.map(node => [
+        node.id,
+        [margin + node.depth * xGap, margin + (leafOrder.get(node.id) || 0) * yGap]
+      ]));
+      const displayW = Math.max(260, Math.min(520, width * 1.6));
+      const displayH = Math.max(130, Math.min(360, displayW * height / Math.max(1, width)));
+      const svg = el("svg", {{viewBox:`0 0 ${{width}} ${{height}}`, width:displayW, height:displayH}});
+
+      for (const [a, b] of flat.edges) {{
+        const [x1, y1] = pos.get(a.id);
+        const [x2, y2] = pos.get(b.id);
+        const edgeKey = `${{a.label}}->${{b.label}}`;
+        const activeKey = `${{pathTree.vehicle_id}}|${{edgeKey}}`;
+        const activeEdge = activeEdges.has(activeKey);
+        const selectedEdge = selected.has(edgeKey);
+        svg.appendChild(el("line", {{
+          x1:x1 + 8,
+          y1,
+          x2:x2 - 9,
+          y2,
+          stroke:activeEdge ? "#f97316" : (selectedEdge ? "#16a34a" : "#cbd5e1"),
+          "stroke-width":activeEdge ? 3.2 : (selectedEdge ? 2 : 1.1)
+        }}));
+        const extra = activeExtraByEdge.get(activeKey);
+        if (activeEdge && Number.isFinite(extra)) {{
+          const lx = (x1 + x2) / 2;
+          const ly = (y1 + y2) / 2 - 7;
+          svg.appendChild(el("rect", {{
+            x:lx-18, y:ly-8, width:36, height:11, rx:2,
+            fill:"#ffffff",
+            stroke:"#f97316",
+            "stroke-width":1
+          }}));
           svg.appendChild(el("text", {{
-            x, y:y+19,
+            x:lx, y:ly,
+            "text-anchor":"middle",
+            "dominant-baseline":"middle",
+            "font-family":"Arial",
+            "font-size":7,
+            "font-weight":700,
+            fill:"#9a3412"
+          }}, `+${{extra.toFixed(2)}}s`));
+        }}
+      }}
+
+      for (const node of flat.nodes) {{
+        const [x, y] = pos.get(node.id);
+        const selectedNode = node.label === `P${{pathTree.entrance}}` || selectedLabels.includes(node.label);
+        const fill = selectedNode ? "#dcfce7" : "#f8fafc";
+        const stroke = node.children.size > 1 ? "#2563eb" : "#64748b";
+        svg.appendChild(el("circle", {{cx:x, cy:y, r:7.5, fill, stroke, "stroke-width":1.2}}));
+        svg.appendChild(el("text", {{x, y:y+2, "text-anchor":"middle", "font-family":"Arial", "font-size":6.5, "font-weight":700}}, node.label));
+      }}
+      return svg;
+    }}
+
+    function renderBasicMap() {{
+      const panel = document.getElementById("basicMapPanel");
+      panel.innerHTML = "";
+      const coordEntries = Object.entries(DATA.coords || {{}});
+      if (!coordEntries.length) {{
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No map geometry";
+        panel.appendChild(empty);
+        return;
+      }}
+
+      const xs = coordEntries.map(([, xy]) => xy[0]);
+      const ys = coordEntries.map(([, xy]) => xy[1]);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      const scale = 48;
+      const margin = 30;
+      const width = (maxX - minX) * scale + margin * 2;
+      const height = (maxY - minY) * scale + margin * 2;
+      const point = (x, y) => [margin + (x - minX) * scale, margin + (maxY - y) * scale];
+      const delta = {{L:[-1,0], D:[0,-1], R:[1,0], U:[0,1]}};
+      const entrancePorts = new Set((DATA.plans || []).map(plan => Number(plan.entrance)));
+      const exitPorts = new Set((DATA.plans || []).map(plan => Number(plan.exit)));
+      const displayW = Math.max(220, Math.min(420, width * 2.8));
+      const displayH = Math.max(110, Math.min(300, displayW * height / Math.max(1, width)));
+      const svg = el("svg", {{viewBox:`0 0 ${{width}} ${{height}}`, width:displayW, height:displayH}});
+      svg.appendChild(el("rect", {{x:0, y:0, width, height, fill:"#ffffff"}}));
+
+      for (const road of DATA.roads || []) {{
+        const a = DATA.coords[String(road.a)];
+        const b = DATA.coords[String(road.b)];
+        if (!a || !b) continue;
+        const [x1, y1] = point(a[0], a[1]);
+        const [x2, y2] = point(b[0], b[1]);
+        svg.appendChild(el("line", {{
+          x1, y1, x2, y2,
+          stroke:"#94a3b8",
+          "stroke-width":4,
+          "stroke-linecap":"round"
+        }}));
+      }}
+
+      for (const item of coordEntries) {{
+        const id = Number(item[0]);
+        const [gx, gy] = item[1];
+        const [x, y] = point(gx, gy);
+        svg.appendChild(el("circle", {{cx:x, cy:y, r:9, fill:"#2563eb", stroke:"#1e3a8a", "stroke-width":1.8}}));
+        svg.appendChild(el("text", {{
+          x, y:y+1,
+          "text-anchor":"middle",
+          "dominant-baseline":"middle",
+          "font-family":"Arial",
+          "font-size":7,
+          "font-weight":700,
+          fill:"#ffffff"
+        }}, `I${{id}}`));
+      }}
+
+      for (const port of DATA.ports || []) {{
+        const xy = DATA.coords[String(port.intersection)];
+        const d = delta[port.direction] || [0, 0];
+        if (!xy) continue;
+        const [px, py] = point(xy[0] + d[0] * 0.50, xy[1] + d[1] * 0.50);
+        const isEntrance = entrancePorts.has(Number(port.id));
+        const isExit = exitPorts.has(Number(port.id));
+        const fill = isEntrance && isExit ? "#ede9fe" : (isEntrance ? "#dcfce7" : (isExit ? "#ffedd5" : "#fef3c7"));
+        const stroke = isEntrance && isExit ? "#7c3aed" : (isEntrance ? "#16a34a" : (isExit ? "#f97316" : "#b77900"));
+        svg.appendChild(el("rect", {{
+          x:px-12, y:py-9,
+          width:24,
+          height:18,
+          rx:3,
+          fill,
+          stroke,
+          "stroke-width":1.5
+        }}));
+        svg.appendChild(el("text", {{
+          x:px, y:py+1,
+          "text-anchor":"middle",
+          "dominant-baseline":"middle",
+          "font-family":"Arial",
+          "font-size":7,
+          "font-weight":700
+        }}, `P${{port.id}}`));
+        if (isEntrance || isExit) {{
+          const tag = isEntrance && isExit ? "Ent/Ext" : (isEntrance ? "Ent" : "Ext");
+          svg.appendChild(el("text", {{
+            x:px,
+            y:py+16,
             "text-anchor":"middle",
             "font-family":"Arial",
             "font-size":5.8,
             "font-weight":700,
-            fill:"#1d4ed8"
-          }}, movementLabel(terminalMovement)));
+            fill:stroke
+          }}, tag));
         }}
       }}
-      return svg;
+      panel.appendChild(svg);
+    }}
+
+    function pathCostText(option) {{
+      if (!option) return "";
+      const free = Number(option.free_time || 0);
+      const extra = Number(option.extra_time || 0);
+      const lambda = Number(DATA.lambda_path || 1);
+      return `free=${{free.toFixed(3)}}s, extra=${{extra.toFixed(3)}}s, obj=${{(lambda * extra).toFixed(3)}}`;
+    }}
+
+    function pathText(option, includeCost=false) {{
+      if (!option) return "";
+      const base = `[${{option.intersections.map(m => `I${{m}}`).join(",")}}]`;
+      return includeCost ? `${{base}} (${{pathCostText(option)}})` : base;
+    }}
+
+    function renderPathSummary() {{
+      const panel = document.getElementById("pathSummaryPanel");
+      panel.innerHTML = "";
+      if (!DATA.path_trees || !DATA.path_trees.length) {{
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No route options";
+        panel.appendChild(empty);
+        return;
+      }}
+
+      const table = document.createElement("table");
+      table.className = "path-table";
+      table.innerHTML = "<thead><tr><th>Vehicle</th><th>Ent</th><th>Ext</th><th>Selected Path</th><th>Candidate Paths with Path Cost</th></tr></thead>";
+      const tbody = document.createElement("tbody");
+      for (const pathTree of DATA.path_trees) {{
+        const optionIndex = selectedOptionIndex(pathTree);
+        const selected = pathTree.options[optionIndex] || pathTree.options[0];
+        const tr = document.createElement("tr");
+        const candidateList = pathTree.options.map((option, index) => {{
+          const cls = index === optionIndex ? "path-pill selected" : "path-pill";
+          return `<span class="${{cls}}"><span>${{index + 1}}: ${{pathText(option)}}</span><span class="path-cost">${{pathCostText(option)}}</span></span>`;
+        }}).join("");
+        tr.innerHTML = `
+          <td>N${{pathTree.vehicle_id}}</td>
+          <td>P${{pathTree.entrance}}</td>
+          <td>P${{pathTree.exit}}</td>
+          <td>${{selected ? pathText(selected, true) : ""}}</td>
+          <td><div class="path-list">${{candidateList}}</div></td>
+        `;
+        tbody.appendChild(tr);
+      }}
+      table.appendChild(tbody);
+      panel.appendChild(table);
+    }}
+
+    function branchChoices(pathTree) {{
+      const byPrefix = new Map();
+      for (const option of pathTree.options || []) {{
+        const labels = option.intersections.map(m => `I${{m}}`);
+        for (let k = 0; k < labels.length - 1; k++) {{
+          const prefix = labels.slice(0, k + 1);
+          const key = prefix.join("|");
+          if (!byPrefix.has(key)) byPrefix.set(key, {{prefix, choices:new Set()}});
+          byPrefix.get(key).choices.add(labels[k + 1]);
+        }}
+      }}
+      return [...byPrefix.values()]
+        .filter(item => item.choices.size > 1)
+        .sort((a, b) => a.prefix.length - b.prefix.length || a.prefix.join(",").localeCompare(b.prefix.join(",")));
+    }}
+
+    function renderPathBranches() {{
+      const panel = document.getElementById("pathBranchPanel");
+      panel.innerHTML = "";
+      if (!DATA.path_trees || !DATA.path_trees.length) {{
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No path-selection branches";
+        panel.appendChild(empty);
+        return;
+      }}
+
+      const note = document.createElement("div");
+      note.className = "path-note";
+      note.textContent = "Each row is one actual route-choice point. The green choice is the next intersection used by the currently selected path.";
+      panel.appendChild(note);
+
+      const table = document.createElement("table");
+      table.className = "path-table";
+      table.innerHTML = "<thead><tr><th>Vehicle</th><th>Ent</th><th>Ext</th><th>Reached Prefix</th><th>Next Choices</th></tr></thead>";
+      const tbody = document.createElement("tbody");
+      for (const pathTree of DATA.path_trees) {{
+        const optionIndex = selectedOptionIndex(pathTree);
+        const selected = pathTree.options[optionIndex] || pathTree.options[0];
+        const selectedLabels = selected ? selected.intersections.map(m => `I${{m}}`) : [];
+        for (const item of branchChoices(pathTree)) {{
+          const selectedNext = selectedLabels.length > item.prefix.length &&
+            item.prefix.every((label, index) => selectedLabels[index] === label)
+              ? selectedLabels[item.prefix.length]
+              : "";
+          const choices = [...item.choices].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+          const choiceText = choices.map(choice => {{
+            const cls = choice === selectedNext ? "path-pill selected" : "path-pill";
+            return `<span class="${{cls}}">${{choice}}</span>`;
+          }}).join("");
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>N${{pathTree.vehicle_id}}</td>
+            <td>P${{pathTree.entrance}}</td>
+            <td>P${{pathTree.exit}}</td>
+            <td>[${{item.prefix.join(",")}}]</td>
+            <td><div class="path-list">${{choiceText}}</div></td>
+          `;
+          tbody.appendChild(tr);
+        }}
+      }}
+      table.appendChild(tbody);
+      panel.appendChild(table);
     }}
 
     function renderPathTrees() {{
       const panel = document.getElementById("pathTreePanel");
       panel.innerHTML = "";
+      const activeEdges = activeDecisionEdges();
+      const activeExtra = activeDecisionExtraByEdge();
       for (const pathTree of DATA.path_trees) {{
         const optionIndex = selectedOptionIndex(pathTree);
         const option = pathTree.options[optionIndex] || pathTree.options[0];
-        const selectedText = option ? option.intersections.map(m => `I${{m}}`).join(",") : "";
-        const optionText = pathTree.options.map(o => `[${{o.intersections.map(m => "I"+m).join(",")}}]`).join(" ");
+        const activeText = [...activeEdges]
+          .filter(key => key.startsWith(`${{pathTree.vehicle_id}}|`))
+          .map(key => {{
+            const edge = key.split("|")[1];
+            const extra = activeExtra.get(key);
+            return Number.isFinite(extra) ? `${{edge}}(+${{extra.toFixed(2)}}s)` : edge;
+          }})
+          .join(", ");
         const card = document.createElement("section");
         card.className = "path-card";
-        card.innerHTML = `<h3>N${{pathTree.vehicle_id}} &nbsp; Ent: P${{pathTree.entrance}} &nbsp; Ext: P${{pathTree.exit}}<br>selected: [${{selectedText}}] &nbsp; options: ${{optionText}}</h3>`;
-        card.appendChild(pathTreeSvg(pathTree, optionIndex));
+        card.innerHTML = `<h3>N${{pathTree.vehicle_id}} selected: ${{option ? pathText(option) : ""}}${{activeText ? ` | z edge: ${{activeText}}` : ""}}</h3>`;
+        const visuals = document.createElement("div");
+        visuals.className = "path-card-visuals";
+        const dagWrap = document.createElement("div");
+        dagWrap.innerHTML = '<div class="path-visual-title">System DAG</div>';
+        dagWrap.appendChild(pathTreeSvg(pathTree, optionIndex));
+        const treeWrap = document.createElement("div");
+        treeWrap.innerHTML = '<div class="path-visual-title">Expanded Path Selection Tree</div>';
+        treeWrap.appendChild(expandedPathTreeSvg(pathTree, optionIndex, activeEdges, activeExtra));
+        visuals.appendChild(dagWrap);
+        visuals.appendChild(treeWrap);
+        card.appendChild(visuals);
         panel.appendChild(card);
       }}
     }}
@@ -2569,7 +2950,7 @@ def write_interactive_solution_html(
       const selected = terminals[cursor];
       const node = nodeById.get(selected);
       const isBest = selected === DATA.best_idx;
-      document.getElementById("meta").textContent = `Path ${{cursor+1}}/${{terminals.length}}: node ${{selected}}${{isBest ? " * optimal" : ""}} | J = ${{node.g.toFixed(3)}}`;
+      document.getElementById("meta").textContent = `Path ${{cursor+1}}/${{terminals.length}}: node ${{selected}}${{isBest ? " * optimal" : ""}} | J = ${{node.g.toFixed(3)}} | shown paths ${{DATA.terminal_count_shown}}/${{DATA.terminal_count_total}}, nodes ${{DATA.node_count_shown}}/${{DATA.node_count_total}}`;
       document.getElementById("scheduleTitle").textContent = `Schedule for node ${{selected}}${{isBest ? " *" : ""}}`;
       const panel = document.getElementById("schedulePanel");
       panel.innerHTML = "";
@@ -2597,6 +2978,9 @@ def write_interactive_solution_html(
 
     function renderAll() {{
       renderTree();
+      renderBasicMap();
+      renderPathSummary();
+      renderPathBranches();
       renderPathTrees();
       renderSchedule();
     }}
@@ -2629,41 +3013,6 @@ def write_interactive_solution_html(
       applyTreeViewBox();
     }}, {{passive:false}});
 
-    treeSvg.addEventListener("pointerdown", event => {{
-      if (event.button !== 0 || !treeViewBox) return;
-      treeSvg.setPointerCapture(event.pointerId);
-      treeSvg.classList.add("dragging");
-      treeDrag = {{
-        pointerId:event.pointerId,
-        x:event.clientX,
-        y:event.clientY,
-        viewBox:treeViewBox.slice()
-      }};
-    }});
-
-    treeSvg.addEventListener("pointermove", event => {{
-      if (!treeDrag || !treeViewBox) return;
-      const rect = treeSvg.getBoundingClientRect();
-      const dx = (event.clientX - treeDrag.x) * treeDrag.viewBox[2] / Math.max(1, rect.width);
-      const dy = (event.clientY - treeDrag.y) * treeDrag.viewBox[3] / Math.max(1, rect.height);
-      treeViewBox = [
-        treeDrag.viewBox[0] - dx,
-        treeDrag.viewBox[1] - dy,
-        treeDrag.viewBox[2],
-        treeDrag.viewBox[3]
-      ];
-      applyTreeViewBox();
-    }});
-
-    function finishTreeDrag(event) {{
-      if (!treeDrag) return;
-      try {{ treeSvg.releasePointerCapture(treeDrag.pointerId); }} catch (_) {{}}
-      treeSvg.classList.remove("dragging");
-      treeDrag = null;
-    }}
-
-    treeSvg.addEventListener("pointerup", finishTreeDrag);
-    treeSvg.addEventListener("pointercancel", finishTreeDrag);
     treeSvg.addEventListener("dblclick", event => {{
       event.preventDefault();
       resetTreeZoom();
@@ -2686,7 +3035,7 @@ def write_interactive_solution_html(
     splitter.addEventListener("pointermove", event => {{
       if (!splitterDrag) return;
       const raw = (event.clientX - splitterDrag.left) / Math.max(1, splitterDrag.width) * 100;
-      const pct = Math.min(72, Math.max(25, raw));
+      const pct = Math.min(84, Math.max(25, raw));
       mainLayout.style.setProperty("--left-pane", `${{pct.toFixed(1)}}%`);
     }});
 
@@ -2701,7 +3050,7 @@ def write_interactive_solution_html(
     splitter.addEventListener("pointercancel", finishSplitterDrag);
     splitter.addEventListener("dblclick", event => {{
       event.preventDefault();
-      mainLayout.style.setProperty("--left-pane", "80%");
+      mainLayout.style.setProperty("--left-pane", "75%");
     }});
     renderAll();
   </script>

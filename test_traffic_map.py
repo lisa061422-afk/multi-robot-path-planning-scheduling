@@ -79,6 +79,44 @@ class TrafficMapTests(unittest.TestCase):
         self.assertTrue(all(opt.intersections[0] == 1 for opt in options))
         self.assertTrue(all(opt.intersections[-1] == 9 for opt in options))
 
+    def test_paper_3x3_has_middle_path_selection(self):
+        tmap = TrafficMap.paper_3x3()
+
+        self.assertEqual(len(tmap.intersection_ids), 9)
+        self.assertEqual(len(tmap.port_ids), 12)
+        self.assertEqual(tmap.road_ids, tuple(range(10, 22)))
+        self.assertEqual(tmap.find_port(1, "L"), 1)
+        self.assertEqual(tmap.find_port(9, "R"), 7)
+
+        vehicle = tmap.vehicle_route_options(1, 1, 7)
+        self.assertGreater(len(vehicle.options), 2)
+        self.assertIn(1, vehicle.branch_intersections)
+        self.assertTrue(
+            any(
+                branch.path_index > 0
+                for option in vehicle.options
+                for branch in option.branch_points
+            )
+        )
+
+    def test_paper_3x3_route_options_exclude_u_turn_traversals(self):
+        tmap = TrafficMap.paper_3x3()
+
+        for entrance in tmap.port_ids:
+            for exit_ in tmap.port_ids:
+                if entrance == exit_:
+                    continue
+                for option in tmap.route_options(entrance, exit_):
+                    for traversal in option.traversals:
+                        self.assertNotEqual(
+                            traversal.exit_dir,
+                            traversal.entry_dir,
+                            msg=(
+                                f"P{entrance}->P{exit_} route {option.intersections} "
+                                f"has U-turn at I{traversal.intersection}"
+                            ),
+                        )
+
     def test_manual_edges_allow_non_unit_axis_aligned_segments(self):
         tmap = TrafficMap.from_grid(
             coords={1: (0, 0), 2: (3, 0), 3: (3, 1)},

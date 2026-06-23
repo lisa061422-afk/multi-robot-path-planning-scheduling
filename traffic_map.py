@@ -357,6 +357,55 @@ class TrafficMap:
         )
 
     @classmethod
+    def paper_3x3(cls) -> "TrafficMap":
+        """A fixed 3x3 layout with ports ordered counterclockwise around the boundary."""
+
+        return cls.from_grid(
+            coords={
+                1: (0, 0),
+                2: (1, 0),
+                3: (2, 0),
+                4: (0, 1),
+                5: (1, 1),
+                6: (2, 1),
+                7: (0, 2),
+                8: (1, 2),
+                9: (2, 2),
+            },
+            ports=[
+                (1, "L"),  # port 1
+                (1, "D"),  # port 2
+                (2, "D"),  # port 3
+                (3, "D"),  # port 4
+                (3, "R"),  # port 5
+                (6, "R"),  # port 6
+                (9, "R"),  # port 7
+                (9, "U"),  # port 8
+                (8, "U"),  # port 9
+                (7, "U"),  # port 10
+                (7, "L"),  # port 11
+                (4, "L"),  # port 12
+            ],
+            auto_ports=False,
+            preserve_port_order=True,
+            road_ids={
+                (1, 2): 10,
+                (2, 3): 11,
+                (4, 5): 12,
+                (5, 6): 13,
+                (7, 8): 14,
+                (8, 9): 15,
+                (1, 4): 16,
+                (4, 7): 17,
+                (2, 5): 18,
+                (5, 8): 19,
+                (3, 6): 20,
+                (6, 9): 21,
+            },
+            name="paper_3x3",
+        )
+
+    @classmethod
     def ppt_2x2(cls) -> "TrafficMap":
         """The 2x2 layout using the port numbering shown in the case-study PPT."""
 
