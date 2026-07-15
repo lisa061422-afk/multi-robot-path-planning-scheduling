@@ -1,5 +1,7 @@
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
 from coarse_scheduler import (
     apply_entrance_headway,
@@ -9,9 +11,11 @@ from coarse_scheduler import (
     expand_node,
     search_parallel_dfs_bb,
     search_dfs_bb,
+    write_interactive_solution_html,
 )
 from resource_schedulers import CoarseIntersectionScheduler, FiveSpaceScheduler
 from traffic_map import TrafficMap
+from trajectory_conflicts import set_trajectory_conflict_filter
 
 
 class CoarseSchedulerTests(unittest.TestCase):
@@ -159,6 +163,76 @@ class CoarseSchedulerTests(unittest.TestCase):
         self.assertAlmostEqual(via_facade.best_g, direct.best_g)
         with self.assertRaises(NotImplementedError):
             FiveSpaceScheduler().schedule_fixed(plans, verbose=False)
+
+    def test_interactive_html_records_contention_mode_and_route_ids(self):
+        tmap = TrafficMap.rectangular_grid(1, 1)
+        plans = [
+            build_vehicle_plan(tmap, vehicle_id=1, entrance=2, exit=4),
+            build_vehicle_plan(tmap, vehicle_id=2, entrance=4, exit=2),
+        ]
+        try:
+            set_trajectory_conflict_filter(True)
+            result = search_dfs_bb(plans, verbose=False)
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "trajectory_pairs.html"
+                write_interactive_solution_html(
+                    result,
+                    output,
+                    plans=plans,
+                    tmap=tmap,
+                )
+                html = output.read_text(encoding="utf-8")
+
+            self.assertIn('"trajectory_conflict_filter": true', html)
+            self.assertIn('"route_ids": [2]', html)
+            self.assertIn('"route_ids": [8]', html)
+            self.assertIn('"shortest_index": 0', html)
+            self.assertIn("trajectory-pair contention validation", html)
+            self.assertIn("I${resource}, R${routeA}–R${routeB}", html)
+            self.assertNotIn("No scheduled local task", html)
+            self.assertIn("Robot shortest paths (reference)", html)
+            self.assertIn("roundedTrafficPath", html)
+            self.assertNotIn('const tag = isEntrance', html)
+            self.assertIn("<td>B${pathTree.entrance}</td>", html)
+            self.assertNotIn("<td>P${pathTree.entrance}</td>", html)
+            section_titles = [
+                "Decision Tree",
+                "Vehicle Path Branch Trees",
+                "Vehicle Path Options",
+                "Path Selection Branches",
+                "Basic Map",
+            ]
+            section_positions = [html.index(title) for title in section_titles]
+            self.assertEqual(section_positions, sorted(section_positions))
+        finally:
+            set_trajectory_conflict_filter(False)
+
+    def test_interactive_html_caps_visualized_paths_without_changing_search(self):
+        tmap = TrafficMap.paper_2x2()
+        plans = [
+            build_vehicle_plan(tmap, vehicle_id=1, entrance=1, exit=5),
+            build_vehicle_plan(tmap, vehicle_id=2, entrance=2, exit=6),
+        ]
+        result = search_dfs_bb(plans, branch_and_bound=False, verbose=False)
+        self.assertGreater(len(result.leaves), 1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "capped_tree.html"
+            write_interactive_solution_html(
+                result,
+                output,
+                plans=plans,
+                tmap=tmap,
+                max_terminal_paths=1,
+                max_tree_nodes=100,
+            )
+            html = output.read_text(encoding="utf-8")
+
+        self.assertIn('"terminal_count_shown": 1', html)
+        self.assertIn(f'"terminal_count_total": {len(result.leaves)}', html)
+        self.assertIn('"omitted_branches": [{', html)
+        self.assertIn("Full search result retained", html)
+        self.assertIn("Fit selected path", html)
 
 
 if __name__ == "__main__":

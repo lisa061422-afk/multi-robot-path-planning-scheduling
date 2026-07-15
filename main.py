@@ -310,7 +310,7 @@ def demo_fixed_map() -> None:
 
     # ======================================================================
     # ===================== EXPERIMENT PARAMETERS ==========================
-    # 所有常用调参都集中在这里。修改参数时请优先检查本区域。
+    # All commonly adjusted parameters are centralized here. Check this section first when changing settings.
     # ======================================================================
 
     # ----- 1. Timing parameters -----
@@ -332,11 +332,14 @@ def demo_fixed_map() -> None:
     # ----- 3. Decision-tree/search settings -----
     show_all_branches = True
     use_parallel_dynamic = False  # True is faster but harder to debug manually.
+    # These limits affect only the HTML viewer; the search result stays complete.
+    max_visualized_paths = 50
+    max_visualized_nodes = 1500
 
     # ----- 4. Trajectory-contention model (IMPORTANT) -----
     # False: original one-runner-per-intersection contention model.
     # True: exclude whitelisted non-conflicting trajectory pairs.
-    use_trajectory_conflict_filter = False
+    use_trajectory_conflict_filter = True
     set_trajectory_conflict_filter(use_trajectory_conflict_filter)
 
     # ----- 5. Parallel-search settings -----
@@ -491,6 +494,8 @@ def demo_fixed_map() -> None:
             "output/relaxed_interactive_solution.html",
             plans=relaxed_plans,
             tmap=tmap,
+            max_terminal_paths=max_visualized_paths,
+            max_tree_nodes=max_visualized_nodes,
             lambda_path=lambda_path,
         )
         print(f"  interactive relaxed solution viewer: {interactive_path}")
@@ -568,6 +573,8 @@ def demo_fixed_map() -> None:
         "output/coarse_interactive_solution.html",
         plans=plans,
         tmap=tmap,
+        max_terminal_paths=max_visualized_paths,
+        max_tree_nodes=max_visualized_nodes,
         lambda_path=lambda_path,
     )
     panel_path = write_resource_schedule_panel_html(
