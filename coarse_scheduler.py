@@ -37,6 +37,7 @@ from scheduler_models import (
     VehiclePlan,
 )
 from traffic_map import PortId, RouteOption, TrafficMap
+from trajectory_conflicts import simultaneous_prefix
 
 
 from coarse_expansion import expand_array, expand_node
@@ -315,10 +316,10 @@ def _route_option_movements(
     intersections = list(option.intersections)
     out: List[Dict[str, object]] = []
     for k, traversal in enumerate(option.traversals):
-        prev_label = f"P{entrance}" if k == 0 else f"I{intersections[k - 1]}"
+        prev_label = f"B{entrance}" if k == 0 else f"I{intersections[k - 1]}"
         node_label = f"I{traversal.intersection}"
         next_label = (
-            f"P{exit_port}"
+            f"B{exit_port}"
             if k == len(intersections) - 1
             else f"I{intersections[k + 1]}"
         )
@@ -690,7 +691,7 @@ def _dynamic_traversal_signature(
     if task_index0 + 1 < len(option.intersections):
         next_label = f"I{option.intersections[task_index0 + 1]}"
     else:
-        next_label = f"P{plan.exit}"
+        next_label = f"B{plan.exit}"
     return (
         traversal.intersection,
         traversal.route_id,
@@ -752,7 +753,7 @@ def _dynamic_path_decision(
         return None
     return (vehicle_id, option_display, from_i, int(next_label[1:]), tw, extra)
 
-
+# path selection
 def _dynamic_path_choice_children(
     c: RelaxedNode,
     plans: Sequence[RelaxedVehiclePlan],
@@ -862,6 +863,7 @@ def _dynamic_valid_running_choices(
     c: RelaxedNode,
     U_c: Tuple[Optional[int], ...],
     ra: Sequence[float],
+    ni2: Sequence[int],
     plans: Sequence[RelaxedVehiclePlan],
 ) -> Tuple[Tuple[Optional[int], ...], ...]:
     by_resource: Dict[int, List[int]] = {}
@@ -894,12 +896,19 @@ def _dynamic_valid_running_choices(
         per_resource_options.append((resource, options))
 
     choices: List[Tuple[Optional[int], ...]] = []
+    route_ids = []
+    for n, plan in enumerate(plans):
+        if ni2[n] < 1:
+            route_ids.append(-1)
+            continue
+        option = plan.route_options[c.route_candidates[n][0]]
+        route_ids.append(option.traversals[ni2[n] - 1].route_id)
     products = itertools.product(*(item[1] for item in per_resource_options))
     for queues in products:
         U_temp: List[Optional[int]] = [None for _ in plans]
         for (resource, _options), queue in zip(per_resource_options, queues):
-            if queue:
-                U_temp[queue[0]] = resource
+            for n in simultaneous_prefix(queue, route_ids):
+                U_temp[n] = resource
         choices.append(tuple(U_temp))
     return tuple(choices) if choices else (tuple(None for _ in plans),)
 
@@ -930,7 +939,7 @@ def _dynamic_reset_interrupted_repeat_tasks(
     return tuple(out)
 
 
-def _dynamic_next_sig_m(
+def NextSigM(
     tw: float,
     da: Sequence[float],
     ra: Sequence[float],
@@ -972,7 +981,7 @@ def _dynamic_next_sig_m(
     return tuple(d2), tuple(r2), tuple(o2), tw1
 
 
-def _dynamic_make_child(
+def NewNode(
     c: RelaxedNode,
     plans: Sequence[RelaxedVehiclePlan],
     d2: Tuple[float, ...],
@@ -1082,7 +1091,7 @@ def _dynamic_make_child(
     )
 
 
-def _expand_dynamic_codesign_node(
+def expand_array_IN(
     nodes: Sequence[RelaxedNode],
     c_idx: int,
     plans: Sequence[RelaxedVehiclePlan],
@@ -1095,7 +1104,7 @@ def _expand_dynamic_codesign_node(
         merged_children: List[RelaxedNode] = []
         for path_child in path_children:
             temp_node = replace(path_child, idx=c.idx, parent=c.parent)
-            next_children, is_leaf = _expand_dynamic_codesign_node(
+            next_children, is_leaf = expand_array_IN(
                 (temp_node,),
                 0,
                 plans,
@@ -1159,8 +1168,8 @@ def _expand_dynamic_codesign_node(
 
     if not active:
         U_temp = tuple(None for _ in plans)
-        d2, r2, o2, tw1 = _dynamic_next_sig_m(c.tw, da, ra, oa, U_temp)
-        child = _dynamic_make_child(
+        d2, r2, o2, tw1 = NextSigM(c.tw, da, ra, oa, U_temp)
+        child = NewNode(
             c,
             plans,
             d2,
@@ -1176,8 +1185,8 @@ def _expand_dynamic_codesign_node(
         return [child], False
 
     children: List[RelaxedNode] = []
-    for U_temp in _dynamic_valid_running_choices(c, U_c, ra, plans):
-        ra_for_step = _dynamic_reset_interrupted_repeat_tasks(
+    for U_temp in _dynamic_valid_running_choices(c, U_c, ra, ni2, plans):
+        ra_temp = _dynamic_reset_interrupted_repeat_tasks(
             c,
             plans,
             U_c,
@@ -1185,8 +1194,8 @@ def _expand_dynamic_codesign_node(
             ra,
             ni2,
         )
-        d2, r2, o2, tw1 = _dynamic_next_sig_m(c.tw, da, ra_for_step, oa, U_temp)
-        child = _dynamic_make_child(
+        d2, r2, o2, tw1 = NextSigM(c.tw, da, ra_temp, oa, U_temp)
+        child = NewNode(
             c,
             plans,
             d2,
@@ -1196,7 +1205,7 @@ def _expand_dynamic_codesign_node(
             ni2,
             U_c,
             U_temp,
-            ra_for_step,
+            ra_temp,
             alpha,
         )
         children.append(child)
@@ -1214,6 +1223,12 @@ def _expand_dynamic_codesign_node(
         )
         unique.setdefault(sig, child)
     return list(unique.values()), False
+
+
+# Backward-compatible aliases for callers using the earlier Python names.
+_dynamic_next_sig_m = NextSigM
+_dynamic_make_child = NewNode
+_expand_dynamic_codesign_node = expand_array_IN
 
 
 def search_dynamic_codesign_dfs_bb(
@@ -1258,7 +1273,7 @@ def search_dynamic_codesign_dfs_bb(
             pruned += 1
             continue
 
-        children, is_leaf = _expand_dynamic_codesign_node(
+        children, is_leaf = expand_array_IN(
             nodes,
             c_idx,
             plans,
@@ -1318,7 +1333,7 @@ def _collect_dynamic_frontier(
     for _level in range(max(0, frontier_depth)):
         next_frontier: List[int] = []
         for c_idx in frontier:
-            children, is_leaf = _expand_dynamic_codesign_node(
+            children, is_leaf = expand_array_IN(
                 nodes,
                 c_idx,
                 plans,
@@ -1371,7 +1386,7 @@ def _search_dynamic_subtree_worker(args):
             pruned += 1
             continue
 
-        children, is_leaf = _expand_dynamic_codesign_node(
+        children, is_leaf = expand_array_IN(
             nodes,
             c_idx,
             plans,
@@ -1532,7 +1547,6 @@ def _ensure_parent(path: str | Path) -> Path:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
-
 
 def write_decision_tree_svg(
     result,
@@ -2633,7 +2647,7 @@ def write_interactive_solution_html(
           "font-family":"Arial",
           "font-size":7,
           "font-weight":700
-        }}, `P${{port.id}}`));
+        }}, `B${{port.id}}`));
         if (isEntrance || isExit) {{
           const tag = isEntrance && isExit ? "Ent/Ext" : (isEntrance ? "Ent" : "Ext");
           svg.appendChild(el("text", {{

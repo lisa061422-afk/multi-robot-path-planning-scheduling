@@ -23,6 +23,7 @@ from coarse_scheduler import (
     write_resource_schedule_svgs,
 )
 from traffic_map import TrafficMap
+from trajectory_conflicts import set_trajectory_conflict_filter
 
 
 EPS = 1e-9
@@ -283,16 +284,17 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
         return [
             # 3x3 training case: P1->P7 has path choices after the start
             # intersection, not only at the entrance.
-            # (1, 3, 6, 0.0),   
+            # (1,3,12,0.0)
+            (1, 3, 6, 0.0),
             (2, 4, 8, 0.0),   
-            # (3, 12, 5, 0.0),  # I4 -> I3, cross traffic through the middle
+            (3, 12, 5, 0.0),  # I4 -> I3, cross traffic through the middle
         ]
 
     raise ValueError(f"unknown fixed_map: {fixed_map}")
 
 
 def demo_fixed_map() -> None:
-    fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3"
+    fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3" HERE!!!
     tmap = build_fixed_map(fixed_map)
     svg_path = tmap.write_svg(f"output/{tmap.name}_map.svg")
 
@@ -306,8 +308,16 @@ def demo_fixed_map() -> None:
     for line in tmap.describe_ports():
         print("  " + line)
 
+    # ======================================================================
+    # ===================== EXPERIMENT PARAMETERS ==========================
+    # 所有常用调参都集中在这里。修改参数时请优先检查本区域。
+    # ======================================================================
+
+    # ----- 1. Timing parameters -----
     Dt = 3.0
     T_headway = 2.0
+
+    # ----- 2. Path-planning mode -----
     enable_path_selection = True
     planning_mode = (
         "relaxed_path_selection"
@@ -318,12 +328,28 @@ def demo_fixed_map() -> None:
     lambda_path = 1.0
     use_baseline_path_filter = False
     keep_min_hop_route_options = True
+
+    # ----- 3. Decision-tree/search settings -----
     show_all_branches = True
     use_parallel_dynamic = False  # True is faster but harder to debug manually.
+
+    # ----- 4. Trajectory-contention model (IMPORTANT) -----
+    # False: original one-runner-per-intersection contention model.
+    # True: exclude whitelisted non-conflicting trajectory pairs.
+    use_trajectory_conflict_filter = False
+    set_trajectory_conflict_filter(use_trajectory_conflict_filter)
+
+    # ----- 5. Parallel-search settings -----
     parallel_frontier_depth = 2
     parallel_max_workers = 4
+
+    # ----- 6. Vehicle/sample settings -----
     full_tree_vehicle_count = 3
     vehicle_requests = default_vehicle_requests(fixed_map)
+
+    # ======================================================================
+    # =================== END EXPERIMENT PARAMETERS ========================
+    # ======================================================================
 
     run_vehicle_requests = (
         vehicle_requests[:full_tree_vehicle_count]
@@ -340,6 +366,10 @@ def demo_fixed_map() -> None:
     )
 
     print()
+    print(
+        "Trajectory contention filter: "
+        f"{'enabled' if use_trajectory_conflict_filter else 'disabled'}"
+    )
     print("Selected OD:")
     print("  entrance " + tmap.describe_port(entrance))
     print("  exit     " + tmap.describe_port(exit_))

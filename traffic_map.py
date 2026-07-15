@@ -544,6 +544,7 @@ class TrafficMap:
         paths = self.enumerate_intersection_paths(
             entrance, exit, max_hops=max_hops, max_paths=max_paths
         )
+        # S_n(t)
         prefix_choices = self._prefix_next_choices(paths)
 
         options: List[RouteOption] = []
@@ -696,7 +697,7 @@ class TrafficMap:
                 'width="36" height="24" rx="4" fill="white" '
                 'stroke="#777" stroke-width="1.5"/>'
             )
-            parts.append(text((ax + bx) / 2, (ay + by) / 2, f"B{road_id}", size=11, weight="700"))
+            parts.append(text((ax + bx) / 2, (ay + by) / 2, f"L{road_id}", size=11, weight="700"))
 
         port_offset = 0.38
         for port_id in self.port_ids:
@@ -708,7 +709,7 @@ class TrafficMap:
                 f'<rect x="{px - 18:.1f}" y="{py - 14:.1f}" width="36" height="28" '
                 'rx="4" fill="#ffd166" stroke="#b77900" stroke-width="2"/>'
             )
-            parts.append(text(px, py, f"P{port.id}", size=12, weight="700"))
+            parts.append(text(px, py, f"B{port.id}", size=12, weight="700"))
             lx, ly = point(ix + dx * (port_offset + 0.24), iy + dy * (port_offset + 0.24))
             parts.append(text(lx, ly, port.direction, size=11))
 

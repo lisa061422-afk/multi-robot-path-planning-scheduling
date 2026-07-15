@@ -20,6 +20,7 @@ from scheduler_models import (
     ScheduleSegment,
     VehiclePlan,
 )
+from trajectory_conflicts import simultaneous_prefix
 
 
 def expand_node(
@@ -147,12 +148,16 @@ def _valid_running_choices(
         per_resource_options.append((resource, options))
 
     choices: List[Tuple[Optional[int], ...]] = []
+    route_ids = [
+        plan.route.traversals[ni2[n] - 1].route_id if ni2[n] >= 1 else -1
+        for n, plan in enumerate(plans)
+    ]
     products = itertools.product(*(item[1] for item in per_resource_options))
     for queues in products:
         U_temp: List[Optional[int]] = [None for _ in plans]
         for (resource, _options), queue in zip(per_resource_options, queues):
-            if queue:
-                U_temp[queue[0]] = resource
+            for n in simultaneous_prefix(queue, route_ids):
+                U_temp[n] = resource
         choices.append(tuple(U_temp))
 
     return tuple(choices) if choices else (tuple(None for _ in plans),)
