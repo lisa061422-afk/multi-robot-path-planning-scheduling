@@ -229,11 +229,19 @@ def open_output_file(path: str | Path) -> bool:
     return True
 
 
-def build_fixed_map(fixed_map: str) -> TrafficMap:
+def build_fixed_map(
+    fixed_map: str,
+    *,
+    intersection_time_scale: float = 1.0,
+) -> TrafficMap:
     if fixed_map == "paper_2x2":
-        return TrafficMap.paper_2x2()
+        return TrafficMap.paper_2x2(
+            intersection_time_scale=intersection_time_scale,
+        )
     if fixed_map == "paper_3x3":
-        return TrafficMap.paper_3x3()
+        return TrafficMap.paper_3x3(
+            intersection_time_scale=intersection_time_scale,
+        )
     raise ValueError(f"unknown fixed_map: {fixed_map}")
 
 
@@ -295,18 +303,6 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
 
 def demo_fixed_map() -> None:
     fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3" HERE!!!
-    tmap = build_fixed_map(fixed_map)
-    svg_path = tmap.write_svg(f"output/{tmap.name}_map.svg")
-
-    print(f"Map: {tmap.name}")
-    print(f"Map drawing: {svg_path}")
-    print("Intersections:", tmap.intersection_ids)
-    print("Roads/buffers:")
-    for line in tmap.describe_roads():
-        print("  " + line)
-    print("Entrances/exits:")
-    for line in tmap.describe_ports():
-        print("  " + line)
 
     # ======================================================================
     # ===================== EXPERIMENT PARAMETERS ==========================
@@ -314,7 +310,8 @@ def demo_fixed_map() -> None:
     # ======================================================================
 
     # ----- 1. Timing parameters -----
-    Dt = 3.0
+    intersection_time_scale = 2.0
+    Dt = 2.0
     T_headway = 2.0
 
     # ----- 2. Path-planning mode -----
@@ -333,8 +330,12 @@ def demo_fixed_map() -> None:
     show_all_branches = True
     use_parallel_dynamic = False  # True is faster but harder to debug manually.
     # These limits affect only the HTML viewer; the search result stays complete.
-    max_visualized_paths = 50
-    max_visualized_nodes = 1500
+    if show_all_branches:
+        max_visualized_paths = 30
+        max_visualized_nodes = 2000
+    else:
+        max_visualized_paths = 100
+        max_visualized_nodes = 2000
 
     # ----- 4. Trajectory-contention model (IMPORTANT) -----
     # False: original one-runner-per-intersection contention model.
@@ -353,6 +354,23 @@ def demo_fixed_map() -> None:
     # ======================================================================
     # =================== END EXPERIMENT PARAMETERS ========================
     # ======================================================================
+
+    tmap = build_fixed_map(
+        fixed_map,
+        intersection_time_scale=intersection_time_scale,
+    )
+    svg_path = tmap.write_svg(f"output/{tmap.name}_map.svg")
+
+    print(f"Map: {tmap.name}")
+    print(f"Map drawing: {svg_path}")
+    print(f"Intersection time scale: {intersection_time_scale:.3f}")
+    print("Intersections:", tmap.intersection_ids)
+    print("Roads/buffers:")
+    for line in tmap.describe_roads():
+        print("  " + line)
+    print("Entrances/exits:")
+    for line in tmap.describe_ports():
+        print("  " + line)
 
     run_vehicle_requests = (
         vehicle_requests[:full_tree_vehicle_count]

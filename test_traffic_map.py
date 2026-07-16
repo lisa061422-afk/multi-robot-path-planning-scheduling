@@ -99,6 +99,22 @@ class TrafficMapTests(unittest.TestCase):
             )
         )
 
+    def test_intersection_time_scale_scales_coarse_and_space_times(self):
+        base = TrafficMap.paper_3x3()
+        scaled = TrafficMap.paper_3x3(intersection_time_scale=2.0)
+
+        base_traversal = base.traversal_profile(5, "L", "R")
+        scaled_traversal = scaled.traversal_profile(5, "L", "R")
+
+        self.assertAlmostEqual(
+            scaled_traversal.execution_time,
+            2.0 * base_traversal.execution_time,
+        )
+        self.assertEqual(
+            scaled_traversal.space_durations,
+            tuple(2.0 * value for value in base_traversal.space_durations),
+        )
+
     def test_paper_3x3_route_options_exclude_u_turn_traversals(self):
         tmap = TrafficMap.paper_3x3()
 

@@ -1981,8 +1981,8 @@ def write_interactive_solution_html(
     .tree-magnifier.visible {{ display:block; }}
     .tree-magnifier-label {{ position:absolute; left:5px; top:4px; z-index:2; max-width:265px; padding:2px 5px; border-radius:3px; background:rgba(255,255,255,0.9); color:#1e3a8a; font-size:10px; font-weight:700; }}
     #treeLensSvg {{ width:100%; height:100%; display:block; }}
-    #basicMapPanel {{ padding:0 10px 12px; display:grid; justify-items:start; }}
-    #basicMapPanel svg {{ display:block; max-width:100%; height:auto; }}
+    #basicMapPanel, #selectedPathMapPanel {{ padding:0 10px 12px; display:grid; justify-items:start; }}
+    #basicMapPanel svg, #selectedPathMapPanel svg {{ display:block; max-width:100%; height:auto; }}
     #pathSummaryPanel {{ padding:0 10px 10px; }}
     .path-table {{ border-collapse:collapse; font-size:11px; min-width:720px; max-width:100%; margin-bottom:8px; }}
     .path-table th, .path-table td {{ border:1px solid #d1d5db; padding:4px 6px; text-align:left; vertical-align:top; }}
@@ -2041,6 +2041,8 @@ def write_interactive_solution_html(
       <div id="pathBranchPanel"></div>
       <h2>Basic Map</h2>
       <div id="basicMapPanel"></div>
+      <h2>Selected Path Top View</h2>
+      <div id="selectedPathMapPanel"></div>
     </section>
     <div class="splitter" id="splitter" title="Drag to resize panels; double-click to reset"></div>
     <section class="pane">
@@ -2800,8 +2802,8 @@ def write_interactive_solution_html(
       return path + ` L ${{last[0]}} ${{last[1]}}`;
     }}
 
-    function renderBasicMap() {{
-      const panel = document.getElementById("basicMapPanel");
+    function renderBasicMap(panelId="basicMapPanel", routeMode="shortest") {{
+      const panel = document.getElementById(panelId);
       panel.innerHTML = "";
       const coordEntries = Object.entries(DATA.coords || {{}});
       if (!coordEntries.length) {{
@@ -2897,8 +2899,10 @@ def write_interactive_solution_html(
       }}
 
       const routeItems = (DATA.path_trees || []).map((pathTree, index) => {{
-        const shortestIndex = Number.isInteger(pathTree.shortest_index) ? pathTree.shortest_index : 0;
-        return {{pathTree, option:pathTree.options[shortestIndex] || pathTree.options[0], index}};
+        const optionIndex = routeMode === "selected"
+          ? selectedOptionIndex(pathTree)
+          : (Number.isInteger(pathTree.shortest_index) ? pathTree.shortest_index : 0);
+        return {{pathTree, option:pathTree.options[optionIndex] || pathTree.options[0], index}};
       }}).filter(item => item.option);
       const dashPatterns = ["", "9 5", "3 4", "12 4 3 4", "2 3", "14 5"];
       routeItems.forEach((item, routeIndex) => {{
@@ -2948,7 +2952,8 @@ def write_interactive_solution_html(
       }}
 
       const legendY = mapHeight + 9;
-      svg.appendChild(el("text", {{x:8, y:legendY, "font-family":"Arial", "font-size":7.5, "font-weight":700, fill:"#475569"}}, "Robot shortest paths (reference)"));
+      const legendLabel = routeMode === "selected" ? "Current selected paths" : "Robot shortest paths (reference)";
+      svg.appendChild(el("text", {{x:8, y:legendY, "font-family":"Arial", "font-size":7.5, "font-weight":700, fill:"#475569"}}, legendLabel));
       routeItems.forEach((item, index) => {{
         const y = legendY + 12 + index * 14;
         const color = routeColors[index % routeColors.length];
@@ -3363,7 +3368,8 @@ def write_interactive_solution_html(
 
     function renderAll() {{
       renderTree();
-      renderBasicMap();
+      renderBasicMap("basicMapPanel", "shortest");
+      renderBasicMap("selectedPathMapPanel", "selected");
       renderPathSummary();
       renderPathBranches();
       renderPathTrees();
