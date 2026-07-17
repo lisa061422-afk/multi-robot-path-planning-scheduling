@@ -310,9 +310,9 @@ def demo_fixed_map() -> None:
     # ======================================================================
 
     # ----- 1. Timing parameters -----
-    intersection_time_scale = 2.0
-    Dt = 2.0
-    T_headway = 2.0
+    intersection_time_scale = 2.0 # multiple two of org 2*[3/4pi, 2,pi/4] 
+    Dt = 2.0 
+    T_headway = 2.0 
 
     # ----- 2. Path-planning mode -----
     enable_path_selection = True
@@ -340,7 +340,7 @@ def demo_fixed_map() -> None:
     # ----- 4. Trajectory-contention model (IMPORTANT) -----
     # False: original one-runner-per-intersection contention model.
     # True: exclude whitelisted non-conflicting trajectory pairs.
-    use_trajectory_conflict_filter = True
+    use_trajectory_conflict_filter = False
     set_trajectory_conflict_filter(use_trajectory_conflict_filter)
 
     # ----- 5. Parallel-search settings -----
