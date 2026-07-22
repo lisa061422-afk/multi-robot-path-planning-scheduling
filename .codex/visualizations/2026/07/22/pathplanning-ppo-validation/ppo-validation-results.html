@@ -47,24 +47,27 @@
       fill: var(--muted-foreground);
       font-family: inherit;
     }
-    #ppo-validation-results .bar { fill: var(--viz-series-1); }
-    #ppo-validation-results .bar-secondary { fill: var(--viz-series-1); opacity: 0.62; }
+    #ppo-validation-results .bar { fill: var(--viz-series-3, var(--primary)); }
+    #ppo-validation-results .gap-low { fill: var(--viz-series-6, var(--primary)); }
+    #ppo-validation-results .gap-mid { fill: var(--viz-series-2, var(--primary)); }
+    #ppo-validation-results .gap-high { fill: var(--viz-series-4, var(--destructive)); }
+    #ppo-validation-results .gap-severe { fill: var(--destructive); }
     #ppo-validation-results .line {
       fill: none;
-      stroke: var(--viz-series-1);
+      stroke: var(--viz-series-1, var(--primary));
       stroke-width: 3;
       vector-effect: non-scaling-stroke;
     }
-    #ppo-validation-results .point { fill: var(--viz-series-1); }
+    #ppo-validation-results .point { fill: var(--viz-series-1, var(--primary)); }
     #ppo-validation-results .guide {
-      stroke: var(--viz-series-2);
+      stroke: var(--viz-series-5, var(--primary));
       stroke-width: 1.5;
       stroke-dasharray: 5 4;
       vector-effect: non-scaling-stroke;
     }
-    #ppo-validation-results .optimal { fill: var(--viz-series-1); }
-    #ppo-validation-results .suboptimal { fill: var(--viz-series-3); }
-    #ppo-validation-results .worst { fill: var(--viz-series-3); }
+    #ppo-validation-results .optimal { fill: var(--viz-series-3, var(--primary)); }
+    #ppo-validation-results .suboptimal { fill: var(--viz-series-2, var(--destructive)); }
+    #ppo-validation-results .worst { fill: var(--destructive); }
     #ppo-validation-results .track { fill: var(--muted); }
     @media (max-width: 620px) {
       #ppo-validation-results .plot-grid { grid-template-columns: 1fr; }
@@ -91,12 +94,12 @@
         <text class="tick" x="45" y="24" text-anchor="end">cases</text>
 
         <rect class="bar" x="70" y="28" width="48" height="202" rx="3" />
-        <rect class="bar-secondary" x="132" y="220" width="48" height="10" rx="3" />
-        <rect class="bar-secondary" x="194" y="213" width="48" height="17" rx="3" />
-        <rect class="bar-secondary" x="256" y="218" width="48" height="12" rx="3" />
-        <rect class="bar-secondary" x="318" y="214" width="48" height="16" rx="3" />
-        <rect class="bar-secondary" x="380" y="210" width="48" height="20" rx="3" />
-        <rect class="bar-secondary" x="442" y="227" width="48" height="3" rx="2" />
+        <rect class="gap-low" x="132" y="220" width="48" height="10" rx="3" />
+        <rect class="gap-low" x="194" y="213" width="48" height="17" rx="3" />
+        <rect class="gap-mid" x="256" y="218" width="48" height="12" rx="3" />
+        <rect class="gap-mid" x="318" y="214" width="48" height="16" rx="3" />
+        <rect class="gap-high" x="380" y="210" width="48" height="20" rx="3" />
+        <rect class="gap-severe" x="442" y="227" width="48" height="3" rx="2" />
 
         <text class="label" x="94" y="20" text-anchor="middle">361</text>
         <text class="label" x="156" y="212" text-anchor="middle">18</text>
