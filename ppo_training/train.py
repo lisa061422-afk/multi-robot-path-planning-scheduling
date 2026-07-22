@@ -1,4 +1,4 @@
-"""Command-line entry point for fixed-N=3 PPO training on the 3x3 map."""
+"""Command-line entry point for variable-N PPO training on the 3x3 map."""
 
 from __future__ import annotations
 
@@ -25,10 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--updates", type=int, default=100)
     parser.add_argument("--episodes-per-update", type=int, default=16)
     parser.add_argument("--seed", type=int, default=20260721)
+    parser.add_argument("--n-robots", type=int, default=3)
     parser.add_argument(
         "--fixed-case",
         action="store_true",
-        help="train repeatedly on the fixed 3-robot demo instead of random OD cases",
+        help="train repeatedly on one fixed case instead of random OD cases",
     )
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -46,6 +47,9 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         default="output/ppo_n3/ppo_branch_actor.pt",
     )
+    parser.add_argument("--min-initial-release", type=float, default=0.0)
+    parser.add_argument("--max-initial-release", type=float, default=2.0)
+    parser.add_argument("--initial-release-step", type=float, default=0.5)
     parser.add_argument(
         "--metrics-csv",
         default="output/ppo_n3/training_metrics.csv",
@@ -57,20 +61,30 @@ def main() -> None:
     args = parse_args()
     if args.updates <= 0 or args.episodes_per_update <= 0:
         raise ValueError("updates and episodes-per-update must be positive")
+    if args.n_robots <= 0:
+        raise ValueError("--n-robots must be positive")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.set_num_threads(max(1, int(args.torch_threads)))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    encoding_config = EncodingConfig(n_robots=3, n_resources=9, n_ports=12)
+    encoding_config = EncodingConfig(n_robots=args.n_robots, n_resources=9, n_ports=12)
     case_factory = ThreeByThreeCaseFactory(
         seed=args.seed,
         randomize=not args.fixed_case,
+        n_robots=args.n_robots,
+        max_initial_release=args.max_initial_release,
+        min_initial_release=args.min_initial_release,
+        initial_release_step=args.initial_release_step,
     )
     reference_case_factory = ThreeByThreeCaseFactory(
         seed=args.seed,
         randomize=False,
+        n_robots=args.n_robots,
+        max_initial_release=args.max_initial_release,
+        min_initial_release=args.min_initial_release,
+        initial_release_step=args.initial_release_step,
     )
     shape_case = reference_case_factory()
     shape_encoder = BranchEncoder(shape_case.plans, encoding_config)
@@ -107,7 +121,10 @@ def main() -> None:
 
     print(
         "PPO training: "
-        f"map=3x3 N=3 device={device} threads={torch.get_num_threads()} "
+        f"map=3x3 N={args.n_robots} "
+        f"alpha0=[{args.min_initial_release},{args.max_initial_release}] "
+        f"step={args.initial_release_step} "
+        f"device={device} threads={torch.get_num_threads()} "
         f"state_dim={shape_encoder.state_dim} action_dim={shape_encoder.action_dim}"
     )
     print(

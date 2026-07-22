@@ -1,4 +1,4 @@
-"""Three-by-three, three-robot training-case generation."""
+"""Three-by-three training-case generation with configurable robot count."""
 
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ class TrainingCase:
 
 
 class ThreeByThreeCaseFactory:
-    """Create fixed-N=3 cases for the strict one-resource-per-intersection model."""
+    """Create fixed-3x3 map cases for the strict one-resource-per-intersection model."""
 
-    FIXED_REQUESTS: Tuple[Tuple[int, int, int, float], ...] = (
+    FIXED_REQUESTS_3: Tuple[Tuple[int, int, int, float], ...] = (
         (1, 3, 6, 0.0),
         (2, 4, 8, 0.0),
         (3, 12, 5, 0.0),
@@ -33,26 +33,44 @@ class ThreeByThreeCaseFactory:
         self,
         *,
         seed: int = 20260721,
+        n_robots: int = 3,
         randomize: bool = True,
         intersection_time_scale: float = 2.0,
         road_time: float = 2.0,
         entrance_headway: float = 2.0,
         max_initial_release: float = 2.0,
+        min_initial_release: float = 0.0,
+        initial_release_step: float = 0.5,
     ) -> None:
-        self.rng = random.Random(seed)
+        self.seed = int(seed)
+        self.rng = random.Random(self.seed)
         self.randomize = bool(randomize)
+        self.n_robots = int(n_robots)
+        if self.n_robots <= 0:
+            raise ValueError("n_robots must be positive")
         self.road_time = float(road_time)
         self.entrance_headway = float(entrance_headway)
+        self.min_initial_release = float(min_initial_release)
         self.max_initial_release = float(max_initial_release)
+        self.initial_release_step = float(initial_release_step)
+        if self.initial_release_step <= 0:
+            raise ValueError("initial_release_step must be positive")
+        if self.min_initial_release > self.max_initial_release:
+            raise ValueError("min_initial_release must not exceed max_initial_release")
         self.traffic_map = TrafficMap.paper_3x3(
             intersection_time_scale=intersection_time_scale
         )
         set_trajectory_conflict_filter(False)
         self.case_index = 0
+        self.ports = tuple(self.traffic_map.port_ids)
+        if self.randomize:
+            self._fixed_requests = None
+        else:
+            self._fixed_requests = self._build_fixed_requests()
 
     def __call__(self) -> TrainingCase:
         self.case_index += 1
-        requests = self._random_requests() if self.randomize else self.FIXED_REQUESTS
+        requests = self._random_requests() if self.randomize else self._fixed_requests
         plans = tuple(
             build_relaxed_vehicle_plan(
                 self.traffic_map,
@@ -78,13 +96,30 @@ class ThreeByThreeCaseFactory:
         )
 
     def _random_requests(self) -> Tuple[Tuple[int, int, int, float], ...]:
-        ports = tuple(self.traffic_map.port_ids)
+        ports = self.ports
         releases = [
-            0.5 * round(self.rng.uniform(0.0, self.max_initial_release) / 0.5)
-            for _ in range(3)
+            self.initial_release_step
+            * round(
+                self.rng.uniform(self.min_initial_release, self.max_initial_release)
+                / self.initial_release_step
+            )
+            for _ in range(self.n_robots)
         ]
         rows = []
-        for vehicle_id in range(1, 4):
+        for vehicle_id in range(1, self.n_robots + 1):
             entrance, exit_port = self.rng.sample(ports, 2)
             rows.append((vehicle_id, entrance, exit_port, releases[vehicle_id - 1]))
         return tuple(rows)
+
+    def _build_fixed_requests(self) -> Tuple[Tuple[int, int, int, float], ...]:
+        if self.n_robots == 3:
+            return self.FIXED_REQUESTS_3
+        rng = random.Random(self.seed)
+        requests = []
+        for vehicle_id in range(1, self.n_robots + 1):
+            entrance, exit_port = rng.sample(self.ports, 2)
+            initial_release = self.initial_release_step * round(
+                self.min_initial_release / self.initial_release_step
+            )
+            requests.append((vehicle_id, entrance, exit_port, initial_release))
+        return tuple(requests)
