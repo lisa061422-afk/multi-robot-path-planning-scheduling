@@ -36,7 +36,7 @@ def load_actor_checkpoint(
     device: torch.device | str = "cpu",
 ) -> tuple[BranchScoringActor, EncodingConfig, dict]:
     device = torch.device(device)
-    payload = torch.load(path, map_location=device, weights_only=False)
+    payload = torch.load(path, map_location=device, weights_only=True)
     actor = BranchScoringActor(
         int(payload["state_dim"]),
         int(payload["action_dim"]),
