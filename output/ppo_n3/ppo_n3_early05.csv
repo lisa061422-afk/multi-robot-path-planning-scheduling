@@ -1,0 +1,2 @@
+update,episodes,rollout_steps,mean_cost,mean_reward,mean_decisions,mean_branches,actor_loss,critic_loss,entropy,approx_kl,clip_fraction,fixed_greedy_cost,elapsed_seconds
+1,1,7,63.26990816987242,-63.26990816987242,7,3.857142857142857,-0.001075576435791703,1185.66845703125,1.1471542119979858,1.662543859026755e-06,0.0,51.132741228718345,0.05276459991000593
