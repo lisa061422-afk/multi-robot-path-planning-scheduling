@@ -9,7 +9,6 @@ set_trajectory_conflict_filter(False)
 tmap=TrafficMap.paper_3x3()
 Dt=3.0
 T_headway=2.0
-lam=0.1
 
 ports=[]
 for line in tmap.describe_ports():
@@ -25,7 +24,7 @@ def hop(route):
 def run_case(trips):
     plans=make_relaxed_vehicle_plans(tmap,trips,Dt=Dt)
     plans=apply_relaxed_entrance_headway(plans,headway=T_headway)
-    res=search_dynamic_codesign_dfs_bb(plans,lambda_path=lam,branch_and_bound=True,verbose=False)
+    res=search_dynamic_codesign_dfs_bb(plans,branch_and_bound=True,verbose=False)
     return res,plans
 
 def check(res,plans):

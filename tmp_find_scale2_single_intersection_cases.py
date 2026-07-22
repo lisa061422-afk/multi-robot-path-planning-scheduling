@@ -18,14 +18,13 @@ from traffic_map import TrafficMap
 from trajectory_conflicts import set_trajectory_conflict_filter
 
 
-def solve_case(tmap, requests, *, road_time, headway, lambda_path):
+def solve_case(tmap, requests, *, road_time, headway):
     relaxed = apply_relaxed_entrance_headway(
         make_relaxed_vehicle_plans(tmap, requests, Dt=road_time),
         headway=headway,
     )
     codesign = search_dynamic_codesign_dfs_bb(
         relaxed,
-        lambda_path=lambda_path,
         branch_and_bound=True,
         verbose=False,
     )
@@ -89,7 +88,6 @@ def save_case(
         tmap=tmap,
         max_terminal_paths=300,
         max_tree_nodes=8000,
-        lambda_path=settings["lambda_path"],
     )
     write_interactive_solution_html(
         shortest,
@@ -98,7 +96,6 @@ def save_case(
         tmap=tmap,
         max_terminal_paths=300,
         max_tree_nodes=8000,
-        lambda_path=settings["lambda_path"],
     )
 
     selections = []
@@ -184,7 +181,6 @@ def main():
     scale = 2.0
     road_time = 2.0
     headway = 2.0
-    lambda_path = 1.0
     settings = {
         "map": "paper_3x3",
         "vehicle_count": 4,
@@ -192,7 +188,7 @@ def main():
         "intersection_time_scale": scale,
         "road_time": road_time,
         "headway": headway,
-        "lambda_path": lambda_path,
+        "objective": "delay+path_extra",
         "trajectory_conflict_filter": False,
         "branch_and_bound": True,
     }
@@ -227,7 +223,6 @@ def main():
             requests,
             road_time=road_time,
             headway=headway,
-            lambda_path=lambda_path,
         )
         changed = obvious_detour_selections(
             tmap,
@@ -277,7 +272,7 @@ def main():
 
     print(
         f"done found={found} trials={trial} scale={scale} Dt={road_time} "
-        f"headway={headway} lambda={lambda_path} conflict_filter=False"
+        f"headway={headway} objective=delay+path_extra conflict_filter=False"
     )
 
 

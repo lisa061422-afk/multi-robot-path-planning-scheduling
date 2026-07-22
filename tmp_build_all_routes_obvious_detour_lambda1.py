@@ -17,7 +17,6 @@ def main():
     intersection_time_scale = 2.0
     dt = 2.0
     headway = 2.0
-    lambda_path = 1.0
     requests = [
         (1, 3, 9, 0.0),
         (2, 6, 12, 0.0),
@@ -37,7 +36,6 @@ def main():
     )
     codesign = search_dynamic_codesign_dfs_bb(
         relaxed_plans,
-        lambda_path=lambda_path,
         branch_and_bound=True,
         verbose=True,
     )
@@ -89,7 +87,6 @@ def main():
         tmap=tmap,
         max_terminal_paths=None,
         max_tree_nodes=2000,
-        lambda_path=lambda_path,
     )
     write_interactive_solution_html(
         shortest,
@@ -98,7 +95,6 @@ def main():
         tmap=tmap,
         max_terminal_paths=None,
         max_tree_nodes=2000,
-        lambda_path=lambda_path,
     )
 
     with open(out_dir / "case_summary.txt", "w", encoding="utf-8") as summary:
@@ -108,7 +104,7 @@ def main():
         summary.write("branch_and_bound=True (exact optimum; pruned search tree)\n")
         summary.write("HTML tree visualization is capped at 2000 nodes.\n")
         summary.write(f"requests={requests}\n")
-        summary.write(f"lambda_path={lambda_path}\n")
+        summary.write("objective=delay+path_extra\n")
         summary.write(f"intersection_time_scale={intersection_time_scale}\n")
         summary.write(f"Dt={dt}\n")
         summary.write(f"codesign_best_g={codesign.best_g}\n")

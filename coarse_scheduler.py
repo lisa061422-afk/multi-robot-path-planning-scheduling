@@ -348,7 +348,6 @@ def _route_option_movements(
 def search_relaxed_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     deadline: Optional[float] = None,
     max_nodes: Optional[int] = None,
     branch_and_bound: bool = True,
@@ -402,7 +401,7 @@ def search_relaxed_dfs_bb(
                 idx=combo_idx,
                 parent=0,
                 tw=0.0,
-                g=lambda_path * g_path,
+                g=g_path,
                 g_delay=0.0,
                 g_path=g_path,
                 segments=(),
@@ -418,7 +417,7 @@ def search_relaxed_dfs_bb(
             idx = len(nodes)
             index_map[fixed_node.idx] = idx
             g_delay = fixed_node.g
-            g = g_delay + lambda_path * g_path
+            g = g_delay + g_path
             node = RelaxedNode(
                 idx=idx,
                 parent=index_map.get(fixed_node.parent, combo_idx),
@@ -483,7 +482,6 @@ def _solve_relaxed_choice_worker(args):
         order,
         choices,
         plans,
-        lambda_path,
         deadline,
         max_nodes,
         branch_and_bound,
@@ -508,13 +506,12 @@ def _solve_relaxed_choice_worker(args):
         for plan, choice in zip(plans, choices)
     ]
     g_path = sum(max(0.0, chosen - base) for chosen, base in zip(chosen_times, base_times))
-    return order, tuple(choices), fixed_result, g_path, lambda_path * g_path
+    return order, tuple(choices), fixed_result, g_path, g_path
 
 
 def search_relaxed_parallel_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     deadline: Optional[float] = None,
     max_nodes: Optional[int] = None,
     branch_and_bound: bool = True,
@@ -535,7 +532,6 @@ def search_relaxed_parallel_dfs_bb(
     if max_workers <= 1 or len(choice_list) <= 1:
         return search_relaxed_dfs_bb(
             plans,
-            lambda_path=lambda_path,
             deadline=deadline,
             max_nodes=max_nodes,
             branch_and_bound=branch_and_bound,
@@ -548,7 +544,6 @@ def search_relaxed_parallel_dfs_bb(
             order,
             choice,
             tuple(plans),
-            lambda_path,
             deadline,
             max_nodes,
             branch_and_bound,
@@ -606,7 +601,7 @@ def search_relaxed_parallel_dfs_bb(
                 idx=idx,
                 parent=index_map.get(fixed_node.parent, combo_idx),
                 tw=fixed_node.tw,
-                g=g_delay + lambda_path * g_path,
+                g=g_delay + g_path,
                 g_delay=g_delay,
                 g_path=g_path,
                 segments=fixed_node.segments,
@@ -761,8 +756,6 @@ def _dynamic_path_decision(
 def _dynamic_path_choice_children(
     c: RelaxedNode,
     plans: Sequence[RelaxedVehiclePlan],
-    *,
-    lambda_path: float,
 ) -> List[RelaxedNode]:
     simultaneous_choices: List[
         Tuple[
@@ -832,7 +825,7 @@ def _dynamic_path_choice_children(
                 c,
                 idx=-1,
                 parent=c.idx,
-                g=c.g + lambda_path * total_extra,
+                g=c.g + total_extra,
                 g_path=c.g_path + total_extra,
                 route_candidates=tuple(route_candidates),
                 path_decisions=tuple(path_decisions),
@@ -1099,11 +1092,9 @@ def expand_array_IN(
     nodes: Sequence[RelaxedNode],
     c_idx: int,
     plans: Sequence[RelaxedVehiclePlan],
-    *,
-    lambda_path: float,
 ) -> Tuple[List[RelaxedNode], bool]:
     c = nodes[c_idx]
-    path_children = _dynamic_path_choice_children(c, plans, lambda_path=lambda_path)
+    path_children = _dynamic_path_choice_children(c, plans)
     if path_children:
         merged_children: List[RelaxedNode] = []
         for path_child in path_children:
@@ -1112,7 +1103,6 @@ def expand_array_IN(
                 (temp_node,),
                 0,
                 plans,
-                lambda_path=lambda_path,
             )
             if is_leaf:
                 merged_children.append(replace(temp_node, idx=-1, parent=c.idx))
@@ -1235,10 +1225,37 @@ _dynamic_make_child = NewNode
 _expand_dynamic_codesign_node = expand_array_IN
 
 
+def make_dynamic_codesign_root(
+    plans: Sequence[RelaxedVehiclePlan],
+) -> RelaxedNode:
+    """Return the root node used by dynamic path/scheduling co-design.
+
+    This small public interface lets an RL environment reuse the exact same
+    state initialization as the DFS ground-truth solver without importing a
+    private helper.
+    """
+
+    return _dynamic_root(plans)
+
+
+def expand_dynamic_codesign_node(
+    node: RelaxedNode,
+    plans: Sequence[RelaxedVehiclePlan],
+) -> Tuple[List[RelaxedNode], bool]:
+    """Generate every immediate child of ``node`` without DFS pruning.
+
+    The returned children are exactly the feasible branches produced by the
+    dynamic co-design transition model.  No incumbent cost, deadline, or node
+    limit is applied.  ``is_leaf`` is true only when all vehicle tasks have
+    completed.
+    """
+
+    return expand_array_IN((node,), 0, plans)
+
+
 def search_dynamic_codesign_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     deadline: Optional[float] = None,
     max_nodes: Optional[int] = None,
     branch_and_bound: bool = True,
@@ -1281,7 +1298,6 @@ def search_dynamic_codesign_dfs_bb(
             nodes,
             c_idx,
             plans,
-            lambda_path=lambda_path,
         )
         if is_leaf:
             leaves.append(c_idx)
@@ -1326,7 +1342,6 @@ def search_dynamic_codesign_dfs_bb(
 def _collect_dynamic_frontier(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float,
     frontier_depth: int,
 ) -> Tuple[List[RelaxedNode], List[int], List[int]]:
     root = _dynamic_root(plans)
@@ -1341,7 +1356,6 @@ def _collect_dynamic_frontier(
                 nodes,
                 c_idx,
                 plans,
-                lambda_path=lambda_path,
             )
             if is_leaf:
                 leaves.append(c_idx)
@@ -1362,7 +1376,6 @@ def _search_dynamic_subtree_worker(args):
         order,
         frontier_node,
         plans,
-        lambda_path,
         branch_and_bound,
         deadline,
         max_nodes,
@@ -1394,7 +1407,6 @@ def _search_dynamic_subtree_worker(args):
             nodes,
             c_idx,
             plans,
-            lambda_path=lambda_path,
         )
         if is_leaf:
             leaves.append(c_idx)
@@ -1418,7 +1430,6 @@ def _search_dynamic_subtree_worker(args):
 def search_dynamic_codesign_parallel_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     frontier_depth: int = 2,
     max_workers: int = 4,
     deadline: Optional[float] = None,
@@ -1437,7 +1448,6 @@ def search_dynamic_codesign_parallel_dfs_bb(
     t0 = time.perf_counter()
     prefix_nodes, frontier, prefix_leaves = _collect_dynamic_frontier(
         plans,
-        lambda_path=lambda_path,
         frontier_depth=frontier_depth,
     )
 
@@ -1458,7 +1468,6 @@ def search_dynamic_codesign_parallel_dfs_bb(
     if workers <= 1:
         return search_dynamic_codesign_dfs_bb(
             plans,
-            lambda_path=lambda_path,
             deadline=deadline,
             max_nodes=max_nodes,
             branch_and_bound=branch_and_bound,
@@ -1470,7 +1479,6 @@ def search_dynamic_codesign_parallel_dfs_bb(
             order,
             prefix_nodes[frontier_idx],
             tuple(plans),
-            lambda_path,
             branch_and_bound,
             deadline,
             max_nodes,
@@ -1633,7 +1641,6 @@ def write_interactive_solution_html(
     tmap: Optional[TrafficMap] = None,
     max_terminal_paths: Optional[int] = None,
     max_tree_nodes: Optional[int] = None,
-    lambda_path: float = 1.0,
 ) -> Path:
     p = _ensure_parent(path)
     all_terminals = list(result.leaves) if result.leaves else [result.best_idx]
@@ -1937,7 +1944,6 @@ def write_interactive_solution_html(
         "ports": ports,
         "roads": roads,
         "resources": resources,
-        "lambda_path": lambda_path,
         "trajectory_conflict_filter": trajectory_conflict_filter_enabled(),
         "conflicting_route_pairs": [
             [left, right]
@@ -2968,8 +2974,7 @@ def write_interactive_solution_html(
       if (!option) return "";
       const free = Number(option.free_time || 0);
       const extra = Number(option.extra_time || 0);
-      const lambda = Number(DATA.lambda_path || 1);
-      return `free=${{free.toFixed(3)}}s, extra=${{extra.toFixed(3)}}s, obj=${{(lambda * extra).toFixed(3)}}`;
+      return `free=${{free.toFixed(3)}}s, extra=${{extra.toFixed(3)}}s, obj=${{extra.toFixed(3)}}`;
     }}
 
     function pathText(option, includeCost=false) {{

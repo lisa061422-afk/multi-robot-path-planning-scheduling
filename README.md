@@ -52,7 +52,7 @@ When enabled, the demo first solves the shortest-path fixed scheduling case to
 get a feasible upper bound `J_ub`. It then removes route options satisfying:
 
 ```text
-lambda_path * (T_path - T_shortest) > J_ub
+(T_path - T_shortest) > J_ub
 ```
 
 This is a safe path-candidate filter, not a heuristic node-count cutoff. Keep it
@@ -83,13 +83,28 @@ More details are in:
 README_DFS_SETTINGS.md
 ```
 
+## PPO-guided branch selection
+
+The initial PPO implementation is in `ppo_training/`.  It uses the `3 x 3`
+map, exactly three robots, strict one-robot-per-intersection mutual exclusion,
+and a shared neural scorer for the variable legal branch set.  The original
+DFS remains the exact ground-truth solver.
+
+Quick smoke training:
+
+```powershell
+python -m ppo_training.train --updates 2 --episodes-per-update 4 --fixed-case
+```
+
+See `ppo_training/README.md` and `PPO_DESIGN.md` for the training commands and
+the mathematical design.
+
 ## Current 3x3 Demo Notes
 
 The default map is currently:
 
 ```python
 fixed_map = "paper_3x3"
-lambda_path = 1.0
 use_baseline_path_filter = False
 keep_min_hop_route_options = True
 show_all_branches = True
@@ -103,8 +118,9 @@ N2: P1 -> P9
 # N3: P12 -> P5 is kept as a commented cross-traffic option
 ```
 
-For `lambda_path = 1.0`, path-extra seconds and waiting-delay seconds have the
-same weight. In the current all-path-selection display mode, the demo prints:
+Path-extra seconds and waiting-delay seconds are added directly:
+`J = delay + path_extra`. In the current all-path-selection display mode, the
+demo prints:
 
 ```text
 Baseline path filter: disabled; using all route options

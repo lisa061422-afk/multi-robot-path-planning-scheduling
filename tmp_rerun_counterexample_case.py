@@ -14,7 +14,6 @@ def main():
     tmap = TrafficMap.paper_3x3()
     Dt = 3.0
     T_headway = 2.0
-    lambda_path = 1.0
     requests = [
         (1, 8, 2, 0.0),
         (2, 4, 11, 0.0),
@@ -30,7 +29,6 @@ def main():
 
     result = search_dynamic_codesign_dfs_bb(
         relaxed_plans,
-        lambda_path=lambda_path,
         branch_and_bound=False,
         verbose=True,
     )
@@ -56,14 +54,13 @@ def main():
         tmap=tmap,
         max_terminal_paths=None,
         max_tree_nodes=None,
-        lambda_path=lambda_path,
     )
 
     with open(out_dir / "case_summary.txt", "w", encoding="utf-8") as f:
         f.write("counterexample rerun (no omission, branch_and_bound=False)\n")
         f.write("trajectory_conflict_filter=False\n")
         f.write(f"requests={requests}\n")
-        f.write(f"lambda_path={lambda_path}\n")
+        f.write("objective=delay+path_extra\n")
         f.write(f"best_g={result.best_g}\n")
         f.write(f"best_delay={result.best_node.g_delay}\n")
         f.write(f"best_path={result.best_node.g_path}\n")

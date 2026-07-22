@@ -33,7 +33,6 @@ def main():
                 requests,
                 road_time=2.0,
                 headway=2.0,
-                lambda_path=1.0,
             )
             changed = obvious_detour_selections(
                 tmap,
@@ -63,7 +62,7 @@ def main():
                     "intersection_time_scale": 2.0,
                     "road_time": 2.0,
                     "headway": 2.0,
-                    "lambda_path": 1.0,
+                    "objective": "delay+path_extra",
                     "trajectory_conflict_filter": False,
                     "branch_and_bound": True,
                     "all_route_options_retained": True,

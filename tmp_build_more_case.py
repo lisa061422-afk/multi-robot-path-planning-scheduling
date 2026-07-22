@@ -5,7 +5,6 @@ from coarse_scheduler import apply_relaxed_entrance_headway, search_dynamic_code
 
 Dt=3.0
 T_headway=2.0
-lam=0.1
 set_trajectory_conflict_filter(False)
 tmap = TrafficMap.paper_3x3()
 trips=[
@@ -15,7 +14,7 @@ trips=[
 ]
 plans = make_relaxed_vehicle_plans(tmap, trips, Dt=Dt)
 plans = apply_relaxed_entrance_headway(plans, headway=T_headway)
-res = search_dynamic_codesign_dfs_bb(plans, lambda_path=lam, branch_and_bound=True, verbose=False)
+res = search_dynamic_codesign_dfs_bb(plans, branch_and_bound=True, verbose=False)
 print('best_g', res.best_g)
 print('best_delay', res.best_node.g_delay)
 print('best_path', res.best_node.g_path)
@@ -42,11 +41,10 @@ write_interactive_solution_html(
     tmap=tmap,
     max_terminal_paths=300,
     max_tree_nodes=8000,
-    lambda_path=lam,
 )
 print('saved', html)
 with open(out / 'case_summary.txt', 'w', encoding='utf-8') as f:
-    f.write('lambda=0.1\n')
+    f.write('objective=delay+path_extra\n')
     f.write(f'requests={trips}\n')
     f.write(f'best_g={res.best_g}\n')
     f.write(f'best_delay={res.best_node.g_delay}\n')

@@ -21,7 +21,6 @@ def main():
     )
     dt = 2.0
     headway = 2.0
-    lambda_path = 1.0
     requests = [
         (1, 3, 9, 0.0),
         (2, 6, 12, 0.0),
@@ -56,7 +55,6 @@ def main():
 
     codesign = search_dynamic_codesign_dfs_bb(
         relaxed_plans,
-        lambda_path=lambda_path,
         branch_and_bound=False,
         verbose=True,
     )
@@ -100,7 +98,6 @@ def main():
         tmap=tmap,
         max_terminal_paths=None,
         max_tree_nodes=None,
-        lambda_path=lambda_path,
     )
     write_interactive_solution_html(
         shortest,
@@ -109,7 +106,6 @@ def main():
         tmap=tmap,
         max_terminal_paths=None,
         max_tree_nodes=None,
-        lambda_path=lambda_path,
     )
 
     with open(out_dir / "case_summary.txt", "w", encoding="utf-8") as summary:
@@ -117,7 +113,7 @@ def main():
         summary.write("trajectory_conflict_filter=False\n")
         summary.write("branch_and_bound=False (complete search tree)\n")
         summary.write(f"requests={requests}\n")
-        summary.write(f"lambda_path={lambda_path}\n")
+        summary.write("objective=delay+path_extra\n")
         summary.write(f"intersection_time_scale={intersection_time_scale}\n")
         summary.write(f"Dt={dt}\n")
         summary.write("V1 is path-selectable; V2-V6 are fixed shortest-path bottleneck traffic.\n")

@@ -545,7 +545,7 @@ def build_document() -> None:
 
     add_heading(doc, "2. 当前算法的准确定位", 1)
     add_body(doc, "当前程序先为每个起终点对枚举所有 simple intersection paths，再在联合搜索过程中依据车辆的任务生成时刻和路径前缀逐步缩小候选路线，同时搜索交叉口资源占用顺序。目标函数为：")
-    add_code_block(doc, "J = total intersection delay + lambda_path × path_extra")
+    add_code_block(doc, "J = total intersection delay + path_extra")
 
     add_table(doc,
               ["维度", "当前实现", "准确解读"],

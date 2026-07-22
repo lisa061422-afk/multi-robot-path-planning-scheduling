@@ -35,7 +35,6 @@ class CaseSpec:
     map_name: str
     vehicle_requests: tuple[tuple[int, int, int, float], ...]
     t_headway: float
-    lambda_path: float
     max_hops: int
     max_paths: int
 
@@ -171,7 +170,6 @@ def random_case(
             map_name=map_name,
             vehicle_requests=tuple(requests),
             t_headway=rng.choice((0.0, 1.0, 2.0)),
-            lambda_path=1.0,
             max_hops=max_hops,
             max_paths=max_paths,
         )
@@ -192,8 +190,6 @@ def random_case(
 def assert_schedule_valid(
     result: RelaxedSearchResult,
     plans: Sequence[RelaxedVehiclePlan],
-    *,
-    lambda_path: float,
 ) -> None:
     if result.best_idx < 0 or not math.isfinite(result.best_g):
         raise AssertionError("solver did not find a finite complete solution")
@@ -252,7 +248,7 @@ def assert_schedule_valid(
     delay = sum(seg.delay for seg in result.best_schedule)
     if abs(delay - node.g_delay) > 1e-7:
         raise AssertionError(f"delay mismatch: schedule={delay}, node={node.g_delay}")
-    expected_g = node.g_delay + lambda_path * node.g_path
+    expected_g = node.g_delay + node.g_path
     if abs(expected_g - node.g) > 1e-7 or abs(expected_g - result.best_g) > 1e-7:
         raise AssertionError("objective mismatch")
 
@@ -466,7 +462,6 @@ def run_case(
     start = time.perf_counter()
     result = search_dynamic_codesign_parallel_dfs_bb(
         plans,
-        lambda_path=spec.lambda_path,
         frontier_depth=frontier_depth,
         max_workers=max_workers,
         deadline=deadline,
@@ -477,12 +472,11 @@ def run_case(
     elapsed = time.perf_counter() - start
     if has_cutoff(result.log):
         raise AssertionError("dynamic solver hit deadline/max_nodes; result is best-so-far")
-    assert_schedule_valid(result, plans, lambda_path=spec.lambda_path)
+    assert_schedule_valid(result, plans)
 
     if compare_full_path_baseline:
         baseline = search_relaxed_parallel_dfs_bb(
             plans,
-            lambda_path=spec.lambda_path,
             deadline=deadline,
             max_nodes=max_nodes,
             branch_and_bound=True,

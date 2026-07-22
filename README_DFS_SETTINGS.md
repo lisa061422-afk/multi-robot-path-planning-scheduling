@@ -34,7 +34,7 @@ This is safe because the current implementation only adds nonnegative future
 costs:
 
 ```text
-J = delay cost + lambda_path * extra path cost
+J = delay cost + extra path cost
 ```
 
 So once a partial node is already worse than the current best complete solution,
@@ -53,11 +53,10 @@ show_all_branches = True
 use_parallel_dynamic = False
 parallel_frontier_depth = 2
 parallel_max_workers = 4
-lambda_path = 1.0
 ```
 
-`lambda_path = 1.0` means one second of extra travel time has the same weight
-as one second of scheduling delay.
+One second of extra travel time is added directly to one second of scheduling
+delay; there is no separate path-cost weight.
 
 `fixed_map` and `show_all_branches` are intentionally independent. Use
 `fixed_map` only to choose the map, and use `show_all_branches` only to choose
@@ -73,7 +72,6 @@ show_all_branches = True
 use_parallel_dynamic = False
 parallel_frontier_depth = 2
 parallel_max_workers = 4
-lambda_path = 1.0
 ```
 
 This runs true dynamic co-design in one process and keeps all branches for
@@ -90,7 +88,6 @@ show_all_branches = False
 use_parallel_dynamic = True
 parallel_frontier_depth = 2
 parallel_max_workers = 4
-lambda_path = 1.0
 ```
 
 This runs true dynamic co-design with parallel subtree DFS and branch-and-bound
@@ -173,7 +170,7 @@ J_ub = shortest_path_delay_upper_bound(...)
 Then it filters each vehicle's route options before co-design:
 
 ```text
-keep path p if lambda_path * (T_p - T_shortest) <= J_ub
+keep path p if (T_p - T_shortest) <= J_ub
 ```
 
 The current demo also keeps all minimum-hop route options:
@@ -305,7 +302,6 @@ The dynamic parallel function uses this interface:
 ```python
 search_dynamic_codesign_parallel_dfs_bb(
     relaxed_plans,
-    lambda_path=lambda_path,
     frontier_depth=2,
     max_workers=4,
     branch_and_bound=True,
@@ -378,7 +374,7 @@ test_dynamic_codesign_matches_enumerated_route_choices_on_3x3
 
 It compares the dynamic path-selection solver against the exhaustive
 full-route-combination baseline on the 3x3 map, then verifies no resource
-overlap and checks `J = delay + lambda_path * path_extra`.
+overlap and checks `J = delay + path_extra`.
 
 ## 11. Interactive HTML Viewer
 

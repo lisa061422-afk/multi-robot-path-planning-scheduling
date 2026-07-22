@@ -172,14 +172,13 @@ def shortest_path_delay_upper_bound(
 def filter_relaxed_plans_by_upper_bound(
     relaxed_plans,
     *,
-    lambda_path: float,
     J_ub: float,
     keep_min_hop_options: bool = False,
 ):
     """Remove route options that cannot beat a known feasible upper bound.
 
     For each vehicle, the shortest/free-flow baseline path remains available.
-    Any alternative with lambda_path * (T_path - T_shortest) > J_ub cannot
+    Any alternative with (T_path - T_shortest) > J_ub cannot
     appear in a globally better co-design solution because total delay savings
     are bounded above by the feasible incumbent objective J_ub.
 
@@ -200,7 +199,7 @@ def filter_relaxed_plans_by_upper_bound(
             option
             for option, free_time in zip(plan.route_options, free_times)
             if (
-                lambda_path * max(0.0, free_time - base_time) <= J_ub + EPS
+                max(0.0, free_time - base_time) <= J_ub + EPS
                 or (
                     keep_min_hop_options
                     and len(option.intersections) == min_hops
@@ -248,10 +247,10 @@ def build_fixed_map(
 def default_vehicle_requests(fixed_map: str) -> list[tuple]:
     if fixed_map == "paper_2x2":
         return [
-            # Reproducible case: lambda=1 co-design advantage with only 3 vehicles.
+            # Reproducible co-design advantage with only 3 vehicles.
             #
             # Map: TrafficMap.paper_2x2()
-            # Dt = 3.0, T_headway = 2.0, lambda_path = 1.0
+            # Dt = 3.0, T_headway = 2.0
             # fixed_route_policy = "shortest"
             #
             # fixed-shortest:
@@ -267,7 +266,7 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
             #   delay = 0.000, path_extra = 0.858, J = 0.858
             #
             # This demonstrates a non-shortest path choice reducing total cost
-            # even when lambda_path = 1.0.
+            # when delay and path-extra seconds are added directly.
             # (1, 2, 5, 0.0), #0618 example.
             # (2, 2, 6, 0.0),
             # (3, 6, 4, 0.0),
@@ -322,7 +321,6 @@ def demo_fixed_map() -> None:
         else "fixed_path"
     )
     fixed_route_policy = "shortest"  # "manual_or_shortest" or "shortest"
-    lambda_path = 1.0
     use_baseline_path_filter = False
     keep_min_hop_route_options = True
 
@@ -452,7 +450,6 @@ def demo_fixed_map() -> None:
             before_counts = [len(plan.route_options) for plan in relaxed_plans]
             relaxed_plans = filter_relaxed_plans_by_upper_bound(
                 relaxed_plans,
-                lambda_path=lambda_path,
                 J_ub=J_ub,
                 keep_min_hop_options=keep_min_hop_route_options,
             )
@@ -460,7 +457,7 @@ def demo_fixed_map() -> None:
             print()
             print(
                 "Baseline path filter: "
-                f"J_ub={J_ub:.3f}, lambda_path={lambda_path:.3f}, "
+                f"J_ub={J_ub:.3f}, "
                 f"keep_min_hop={keep_min_hop_route_options}, "
                 f"route options {before_counts} -> {after_counts}"
             )
@@ -473,7 +470,7 @@ def demo_fixed_map() -> None:
         )
         print()
         print("Run mode: relaxed path-selection co-design schedule")
-        print(f"lambda_path={lambda_path:.3f}, T_headway={T_headway:.1f}s")
+        print(f"T_headway={T_headway:.1f}s")
         print("Relaxed route options:")
         for plan in relaxed_plans:
             options = [
@@ -488,7 +485,6 @@ def demo_fixed_map() -> None:
         if use_parallel_dynamic:
             result = search_dynamic_codesign_parallel_dfs_bb(
                 relaxed_plans,
-                lambda_path=lambda_path,
                 frontier_depth=parallel_frontier_depth,
                 max_workers=parallel_max_workers,
                 branch_and_bound=not show_all_branches,
@@ -497,11 +493,10 @@ def demo_fixed_map() -> None:
         else:
             result = search_dynamic_codesign_dfs_bb(
                 relaxed_plans,
-                lambda_path=lambda_path,
                 branch_and_bound=not show_all_branches,
                 verbose=True,
             )
-        print(f"  best_J = delay + lambda*path_extra = {result.best_g:.3f}")
+        print(f"  best_J = delay + path_extra = {result.best_g:.3f}")
         print(
             f"  best delay={result.best_node.g_delay:.3f}, "
             f"path_extra={result.best_node.g_path:.3f}"
@@ -514,7 +509,6 @@ def demo_fixed_map() -> None:
             tmap=tmap,
             max_terminal_paths=max_visualized_paths,
             max_tree_nodes=max_visualized_nodes,
-            lambda_path=lambda_path,
         )
         print(f"  interactive relaxed solution viewer: {interactive_path}")
         open_output_file(interactive_path)
@@ -593,7 +587,6 @@ def demo_fixed_map() -> None:
         tmap=tmap,
         max_terminal_paths=max_visualized_paths,
         max_tree_nodes=max_visualized_nodes,
-        lambda_path=lambda_path,
     )
     panel_path = write_resource_schedule_panel_html(
         schedule_paths,
