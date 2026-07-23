@@ -17,7 +17,7 @@ from scheduler_models import RelaxedVehiclePlan
 
 from .encoding import BranchEncoder, EncodingConfig
 from .environment import DecisionTreeEnv
-from .networks import BranchScoringActor
+from .networks import BranchScoringActor, BranchScoringActorGNN
 
 
 @dataclass(frozen=True)
@@ -37,12 +37,23 @@ def load_actor_checkpoint(
 ) -> tuple[BranchScoringActor, EncodingConfig, dict]:
     device = torch.device(device)
     payload = torch.load(path, map_location=device, weights_only=True)
-    actor = BranchScoringActor(
-        int(payload["state_dim"]),
-        int(payload["action_dim"]),
-        hidden_dim=int(payload["hidden_dim"]),
-        hidden_layers=int(payload.get("actor_hidden_layers", 2)),
-    )
+    actor_type = payload.get("actor_type", "BranchScoringActor")
+    if actor_type == "BranchScoringActorGNN":
+        actor = BranchScoringActorGNN(
+            int(payload["state_dim"]),
+            int(payload["action_dim"]),
+            n_robots=int(payload.get("actor_n_robots", 3)),
+            hidden_dim=int(payload["hidden_dim"]),
+            hidden_layers=int(payload.get("actor_hidden_layers", 2)),
+            message_layers=int(payload.get("actor_gnn_message_layers", 2)),
+        )
+    else:
+        actor = BranchScoringActor(
+            int(payload["state_dim"]),
+            int(payload["action_dim"]),
+            hidden_dim=int(payload["hidden_dim"]),
+            hidden_layers=int(payload.get("actor_hidden_layers", 2)),
+        )
     actor.load_state_dict(payload["actor_state_dict"])
     actor.to(device)
     actor.eval()

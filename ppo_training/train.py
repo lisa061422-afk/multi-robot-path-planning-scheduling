@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from .cases import ThreeByThreeCaseFactory
 from .encoding import BranchEncoder, EncodingConfig
 from .evaluate import evaluate_against_exact
-from .networks import BranchScoringActor, StateValueCritic
+from .networks import BranchScoringActor, BranchScoringActorGNN, StateValueCritic
 from .trainer import PPOConfig, PPOTrainer, finite_mean
 from .environment import DecisionTreeEnv
 from coarse_scheduler import search_dynamic_codesign_dfs_bb
@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--critic-hidden-dim", type=int, default=None)
     parser.add_argument(
+        "--actor-model",
+        choices=["mlp", "gnn"],
+        default="mlp",
+        help="policy network type: mlp baseline or lightweight GNN-style branch scorer",
+    )
+    parser.add_argument(
         "--actor-hidden-layers",
         type=int,
         default=2,
@@ -50,6 +56,12 @@ def parse_args() -> argparse.Namespace:
         help="critic MLP hidden layer count (legacy baseline = 2)",
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument(
+        "--gnn-message-layers",
+        type=int,
+        default=2,
+        help="message passing layers when using --actor-model gnn",
+    )
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=64)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
@@ -118,6 +130,12 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "linear"],
         default="none",
         help="optional learning-rate schedule",
+    )
+    parser.add_argument(
+        "--discount-factor",
+        type=float,
+        default=1.0,
+        help="discount factor gamma for PPO returns/GAE",
     )
     parser.add_argument("--lr-start", type=float, default=None)
     parser.add_argument("--lr-end", type=float, default=None)
@@ -289,6 +307,8 @@ def main() -> None:
         raise ValueError("--critic-hidden-dim must be positive")
     if args.actor_hidden_layers <= 0:
         raise ValueError("--actor-hidden-layers must be positive")
+    if args.actor_model == "gnn" and args.gnn_message_layers <= 0:
+        raise ValueError("--gnn-message-layers must be positive")
     if args.critic_hidden_layers <= 0:
         raise ValueError("--critic-hidden-layers must be positive")
     if args.bc_pretrain_episodes < 0:
@@ -356,18 +376,29 @@ def main() -> None:
     shape_case = reference_case_factory()
     shape_encoder = BranchEncoder(shape_case.plans, encoding_config)
 
-    actor = BranchScoringActor(
-        shape_encoder.state_dim,
-        shape_encoder.action_dim,
-        hidden_dim=args.hidden_dim,
-        hidden_layers=args.actor_hidden_layers,
-    )
+    if args.actor_model == "gnn":
+        actor = BranchScoringActorGNN(
+            shape_encoder.state_dim,
+            shape_encoder.action_dim,
+            n_robots=args.n_robots,
+            hidden_dim=args.hidden_dim,
+            hidden_layers=args.actor_hidden_layers,
+            message_layers=args.gnn_message_layers,
+        )
+    else:
+        actor = BranchScoringActor(
+            shape_encoder.state_dim,
+            shape_encoder.action_dim,
+            hidden_dim=args.hidden_dim,
+            hidden_layers=args.actor_hidden_layers,
+        )
     critic = StateValueCritic(
         shape_encoder.state_dim,
         hidden_dim=args.critic_hidden_dim,
         hidden_layers=args.critic_hidden_layers,
     )
     ppo_config = PPOConfig(
+        discount_factor=args.discount_factor,
         learning_rate=args.learning_rate,
         update_epochs=args.update_epochs,
         minibatch_size=args.minibatch_size,
@@ -397,6 +428,9 @@ def main() -> None:
         f"step={args.initial_release_step} "
         f"device={device} threads={torch.get_num_threads()} "
         f"state_dim={shape_encoder.state_dim} action_dim={shape_encoder.action_dim}"
+    )
+    print(
+        f"discount_factor={args.discount_factor} gae_lambda={trainer.config.gae_lambda}"
     )
     print(
         "reward normalization: "
