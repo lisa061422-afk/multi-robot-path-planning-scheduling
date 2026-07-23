@@ -13,27 +13,32 @@ def _orthogonal_init(module: nn.Module, gain: float = 1.0) -> None:
 
 
 class BranchScoringActor(nn.Module):
-    """Score each currently legal branch with one shared two-layer MLP."""
+    """Score each currently legal branch with one shared MLP."""
 
     def __init__(
         self,
         state_dim: int,
         action_dim: int,
         hidden_dim: int = 128,
+        hidden_layers: int = 2,
     ) -> None:
         super().__init__()
         self.state_dim = int(state_dim)
         self.action_dim = int(action_dim)
         self.hidden_dim = int(hidden_dim)
+        self.hidden_layers = max(1, int(hidden_layers))
+        layers: list[nn.Module] = []
+        input_dim = self.state_dim + self.action_dim
+        for layer_index in range(self.hidden_layers):
+            input_size = input_dim if layer_index == 0 else self.hidden_dim
+            layers.append(nn.Linear(input_size, self.hidden_dim))
+            _orthogonal_init(layers[-1], gain=2.0**0.5)
+            layers.append(nn.LayerNorm(self.hidden_dim))
+            layers.append(nn.SiLU())
+        layers.append(nn.Linear(self.hidden_dim, 1))
         self.network = nn.Sequential(
-            nn.Linear(self.state_dim + self.action_dim, self.hidden_dim),
-            nn.Tanh(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.Tanh(),
-            nn.Linear(self.hidden_dim, 1),
+            *layers,
         )
-        for layer in self.network[:-1]:
-            _orthogonal_init(layer, gain=2.0**0.5)
         _orthogonal_init(self.network[-1], gain=0.01)
 
     def forward(
@@ -66,19 +71,26 @@ class BranchScoringActor(nn.Module):
 class StateValueCritic(nn.Module):
     """Estimate negative expected remaining cost from the current node state."""
 
-    def __init__(self, state_dim: int, hidden_dim: int = 128) -> None:
+    def __init__(
+        self,
+        state_dim: int,
+        hidden_dim: int = 128,
+        hidden_layers: int = 2,
+    ) -> None:
         super().__init__()
         self.state_dim = int(state_dim)
         self.hidden_dim = int(hidden_dim)
-        self.network = nn.Sequential(
-            nn.Linear(self.state_dim, self.hidden_dim),
-            nn.Tanh(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.Tanh(),
-            nn.Linear(self.hidden_dim, 1),
-        )
-        for layer in self.network[:-1]:
-            _orthogonal_init(layer, gain=2.0**0.5)
+        self.hidden_layers = max(1, int(hidden_layers))
+        layers: list[nn.Module] = []
+        input_size = self.state_dim
+        for _ in range(self.hidden_layers):
+            layers.append(nn.Linear(input_size, self.hidden_dim))
+            _orthogonal_init(layers[-1], gain=2.0**0.5)
+            layers.append(nn.LayerNorm(self.hidden_dim))
+            layers.append(nn.SiLU())
+            input_size = self.hidden_dim
+        layers.append(nn.Linear(self.hidden_dim, 1))
+        self.network = nn.Sequential(*layers)
         _orthogonal_init(self.network[-1], gain=1.0)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:

@@ -41,6 +41,7 @@ def load_actor_checkpoint(
         int(payload["state_dim"]),
         int(payload["action_dim"]),
         hidden_dim=int(payload["hidden_dim"]),
+        hidden_layers=int(payload.get("actor_hidden_layers", 2)),
     )
     actor.load_state_dict(payload["actor_state_dict"])
     actor.to(device)
@@ -202,6 +203,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-initial-release", type=float, default=2.0)
     parser.add_argument("--initial-release-step", type=float, default=0.5)
     parser.add_argument(
+        "--fix-shortest-paths",
+        action="store_true",
+        help="evaluate with each vehicle locked to shortest route; scheduling-only baseline",
+    )
+    parser.add_argument(
         "--exact-deadline",
         type=float,
         default=None,
@@ -246,6 +252,7 @@ def main() -> None:
         min_initial_release=args.min_initial_release,
         max_initial_release=args.max_initial_release,
         initial_release_step=args.initial_release_step,
+        fix_shortest_paths=args.fix_shortest_paths,
     )
 
     rows = []
@@ -277,7 +284,7 @@ def main() -> None:
         rows.append(row)
         status = result.exact_status
         exact_status_counts[status] = exact_status_counts.get(status, 0) + 1
-        if math.isfinite(result.relative_gap or float("nan")):
+        if result.relative_gap is not None and math.isfinite(result.relative_gap):
             exact_gaps.append(result.relative_gap)
             finite_exact += 1
         exact_cost_text = (

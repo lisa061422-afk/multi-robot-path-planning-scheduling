@@ -41,6 +41,7 @@ class ThreeByThreeCaseFactory:
         max_initial_release: float = 2.0,
         min_initial_release: float = 0.0,
         initial_release_step: float = 0.5,
+        fix_shortest_paths: bool = False,
     ) -> None:
         self.seed = int(seed)
         self.rng = random.Random(self.seed)
@@ -60,6 +61,7 @@ class ThreeByThreeCaseFactory:
         self.traffic_map = TrafficMap.paper_3x3(
             intersection_time_scale=intersection_time_scale
         )
+        self.fix_shortest_paths = bool(fix_shortest_paths)
         set_trajectory_conflict_filter(False)
         self.case_index = 0
         self.ports = tuple(self.traffic_map.port_ids)
@@ -82,6 +84,11 @@ class ThreeByThreeCaseFactory:
             )
             for vehicle_id, entrance, exit_port, alpha0 in requests
         )
+        if self.fix_shortest_paths:
+            plans = tuple(
+                _single_shortest_route_plan(plan, road_time=self.road_time)
+                for plan in plans
+            )
         plans = tuple(
             apply_relaxed_entrance_headway(
                 plans,
@@ -123,3 +130,30 @@ class ThreeByThreeCaseFactory:
             )
             requests.append((vehicle_id, entrance, exit_port, initial_release))
         return tuple(requests)
+
+
+def _single_shortest_route_plan(
+    plan: RelaxedVehiclePlan,
+    *,
+    road_time: float | None = None,
+) -> RelaxedVehiclePlan:
+    if not plan.route_options:
+        return plan
+    road_time = float(plan.road_time if road_time is None else road_time)
+    shortest_idx = min(
+        range(len(plan.route_options)),
+        key=lambda i: (
+            len(plan.route_options[i].intersections),
+            sum(plan.route_options[i].execution_times)
+            + len(plan.route_options[i].edges) * road_time,
+            plan.route_options[i].id,
+        ),
+    )
+    return RelaxedVehiclePlan(
+        vehicle_id=plan.vehicle_id,
+        entrance=plan.entrance,
+        exit=plan.exit,
+        route_options=(plan.route_options[shortest_idx],),
+        alpha0=plan.alpha0,
+        road_time=road_time,
+    )
