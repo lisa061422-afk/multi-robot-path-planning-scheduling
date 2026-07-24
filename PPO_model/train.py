@@ -103,6 +103,16 @@ def parse_args() -> argparse.Namespace:
         default="output/ppo_n3/training_metrics.csv",
     )
     parser.add_argument(
+        "--reward-cost-mode",
+        choices=["delta_g", "pending_delay"],
+        default="delta_g",
+        help=(
+            "cost used for one-step rewards: delta_g uses booked objective "
+            "increments; pending_delay adds an exact potential that accrues "
+            "waiting cost before task completion"
+        ),
+    )
+    parser.add_argument(
         "--reward-norm-mode",
         choices=["none", "absmax"],
         default="none",
@@ -426,6 +436,7 @@ def _run_training_for_n(
         minibatch_size=args.minibatch_size,
         entropy_coef=args.entropy_coef,
         max_decisions_per_episode=args.max_decisions,
+        reward_cost_mode=args.reward_cost_mode,
         reward_norm_mode=args.reward_norm_mode,
         reward_norm_minmax_eps=args.reward_norm_eps,
     )
@@ -458,8 +469,9 @@ def _run_training_for_n(
         f"discount_factor={args.discount_factor} gae_lambda={trainer.config.gae_lambda}"
     )
     print(
-        "reward normalization: "
-        f"mode={args.reward_norm_mode} eps={args.reward_norm_eps}"
+        "reward: "
+        f"cost_mode={args.reward_cost_mode} "
+        f"normalization={args.reward_norm_mode} eps={args.reward_norm_eps}"
     )
     print(
         f"updates={args.updates} episodes/update={args.episodes_per_update} "

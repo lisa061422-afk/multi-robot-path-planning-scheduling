@@ -34,6 +34,7 @@ class PPOConfig:
     minibatch_size: int = 64
     max_grad_norm: float = 0.5
     max_decisions_per_episode: int = 200
+    reward_cost_mode: str = "delta_g"
     reward_norm_mode: str = "none"
     reward_norm_minmax_eps: float = 1e-12
 
@@ -150,7 +151,10 @@ class PPOTrainer:
                 terminated=True,
             )
 
-        env = DecisionTreeEnv(plans)
+        env = DecisionTreeEnv(
+            plans,
+            reward_cost_mode=self.config.reward_cost_mode,
+        )
         encoder = BranchEncoder(plans, self.encoding_config)
         if encoder.state_dim != self.actor.state_dim:
             raise ValueError("case state dimension does not match Actor")

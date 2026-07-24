@@ -34,6 +34,29 @@ class PPOTrainingTests(unittest.TestCase):
             )
         self.assertAlmostEqual(reward, -(node.g - start_cost))
 
+    def test_pending_delay_reward_is_potential_equivalent_and_nonpositive(self):
+        env = DecisionTreeEnv(
+            self.case.plans,
+            reward_cost_mode="pending_delay",
+        )
+        node, branches, terminated = env.reset()
+        initial_training_cost = env.training_cost(node)
+        reward = 0.0
+        while not terminated:
+            result = env.step(0)
+            self.assertLessEqual(result.reward, 1e-8)
+            reward += result.reward
+            node, branches, terminated = (
+                result.node,
+                result.branches,
+                result.terminated,
+            )
+        self.assertAlmostEqual(env.pending_delay_cost(node), 0.0)
+        self.assertAlmostEqual(
+            reward,
+            -(node.g - initial_training_cost),
+        )
+
     def test_encoder_and_variable_branch_actor_shapes(self):
         env = DecisionTreeEnv(self.case.plans)
         node, branches, terminated = env.reset()
