@@ -211,7 +211,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260721)
     parser.add_argument("--randomize", action="store_true")
     parser.add_argument("--min-initial-release", type=float, default=0.0)
-    parser.add_argument("--max-initial-release", type=float, default=2.0)
+    parser.add_argument("--max-initial-release", type=float, default=5.0)
     parser.add_argument("--initial-release-step", type=float, default=0.5)
     parser.add_argument(
         "--fix-shortest-paths",

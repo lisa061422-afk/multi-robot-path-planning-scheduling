@@ -3,11 +3,11 @@ import unittest
 
 import torch
 
-from ppo_training.cases import ThreeByThreeCaseFactory
-from ppo_training.encoding import BranchEncoder, EncodingConfig
-from ppo_training.environment import DecisionTreeEnv
-from ppo_training.networks import BranchScoringActor, StateValueCritic
-from ppo_training.trainer import PPOConfig, PPOTrainer
+from PPO_model.cases import ThreeByThreeCaseFactory
+from PPO_model.encoding import BranchEncoder, EncodingConfig
+from PPO_model.environment import DecisionTreeEnv
+from PPO_model.networks import BranchScoringActor, StateValueCritic
+from PPO_model.trainer import PPOConfig, PPOTrainer
 
 
 class PPOTrainingTests(unittest.TestCase):

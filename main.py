@@ -1,4 +1,5 @@
 import os
+import argparse
 import sys
 import webbrowser
 from dataclasses import replace
@@ -300,8 +301,14 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
     raise ValueError(f"unknown fixed_map: {fixed_map}")
 
 
-def demo_fixed_map() -> None:
-    fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3" HERE!!!
+def demo_fixed_map(
+    *,
+    fixed_map: str = "paper_3x3",
+    fixed_shortest_paths: bool = False,
+    n_robots: int = 3,
+    fixed_route_policy: str = "shortest",
+    enable_path_selection: bool = True,
+) -> None:
 
     # ======================================================================
     # ===================== EXPERIMENT PARAMETERS ==========================
@@ -314,13 +321,14 @@ def demo_fixed_map() -> None:
     T_headway = 2.0 
 
     # ----- 2. Path-planning mode -----
-    enable_path_selection = True
+    if fixed_shortest_paths:
+        enable_path_selection = False
+        fixed_route_policy = "shortest"
     planning_mode = (
         "relaxed_path_selection"
         if enable_path_selection
         else "fixed_path"
     )
-    fixed_route_policy = "shortest"  # "manual_or_shortest" or "shortest"
     use_baseline_path_filter = False
     keep_min_hop_route_options = True
 
@@ -346,8 +354,12 @@ def demo_fixed_map() -> None:
     parallel_max_workers = 4
 
     # ----- 6. Vehicle/sample settings -----
-    full_tree_vehicle_count = 3
+    if n_robots <= 0:
+        raise ValueError("n-robots must be positive")
     vehicle_requests = default_vehicle_requests(fixed_map)
+    full_tree_vehicle_count = min(int(n_robots), len(vehicle_requests))
+    if full_tree_vehicle_count <= 0:
+        raise ValueError("no vehicle requests available for this map configuration")
 
     # ======================================================================
     # =================== END EXPERIMENT PARAMETERS ========================
@@ -613,5 +625,52 @@ def demo_fixed_map() -> None:
         )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the exact baseline solver with fixed-path or co-design mode."
+    )
+    parser.add_argument(
+        "--fix-shortest-paths",
+        action="store_true",
+        help="fix each vehicle to shortest route and solve only scheduling",
+    )
+    parser.add_argument(
+        "--enable-path-selection",
+        action="store_true",
+        help="enable path-and-schedule co-design (default)",
+    )
+    parser.add_argument(
+        "--n-robots",
+        type=int,
+        default=3,
+        help="number of vehicles to include from the built-in request set",
+    )
+    parser.add_argument(
+        "--fixed-route-policy",
+        choices=["shortest", "manual_or_shortest"],
+        default="shortest",
+        help="route selection policy in fixed-path mode",
+    )
+    parser.add_argument(
+        "--fixed-map",
+        choices=["paper_2x2", "paper_3x3"],
+        default="paper_3x3",
+        help="map to run exact experiment",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    demo_fixed_map()
+    args = parse_args()
+    enable_path_selection = True
+    if args.fix_shortest_paths:
+        enable_path_selection = False
+    elif args.enable_path_selection:
+        enable_path_selection = True
+    demo_fixed_map(
+        fixed_map=args.fixed_map,
+        fixed_shortest_paths=not enable_path_selection,
+        n_robots=args.n_robots,
+        fixed_route_policy=args.fixed_route_policy,
+        enable_path_selection=enable_path_selection,
+    )

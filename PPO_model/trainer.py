@@ -133,6 +133,23 @@ class PPOTrainer:
         skip_trivial: bool = False,
         case_name: str = "unknown",
     ) -> EpisodeStats:
+        if skip_trivial and self._is_single_path_case(
+            plans,
+            max_decisions=self.config.max_decisions_per_episode,
+        ):
+            return EpisodeStats(
+                total_cost=0.0,
+                total_reward=0.0,
+                total_reward_normalized=0.0,
+                case_name=case_name,
+                contention_records=(),
+                contention_pair_count=0,
+                decisions=0,
+                tree_edges=0,
+                mean_branches=0.0,
+                terminated=True,
+            )
+
         env = DecisionTreeEnv(plans)
         encoder = BranchEncoder(plans, self.encoding_config)
         if encoder.state_dim != self.actor.state_dim:
@@ -148,8 +165,8 @@ class PPOTrainer:
                 total_reward=0.0,
                 total_reward_normalized=0.0,
                 case_name=case_name,
-                contention_records=(),
-                contention_pair_count=0,
+                contention_records=case_contentions,
+                contention_pair_count=case_contention_count,
                 decisions=0,
                 tree_edges=env.edge_count,
                 mean_branches=0.0,
@@ -261,6 +278,41 @@ class PPOTrainer:
                 continue
             stats.append(episode_stats)
         return stats
+
+    @staticmethod
+    def _is_single_path_case(
+        plans: Sequence[RelaxedVehiclePlan],
+        max_decisions: int,
+    ) -> bool:
+        """Return True when an episode has no branching decisions at any step.
+
+        This walks the deterministic chain induced by unique-branch nodes and
+        reports True only if every visited decision node exposes one or fewer
+        actions (including already-terminated roots).
+        """
+        env = DecisionTreeEnv(plans)
+        node, branches, terminated = env.reset()
+        if terminated:
+            return True
+        if not branches:
+            return True
+        step_limit = max(1, int(max_decisions))
+        steps = 0
+        while not terminated:
+            if len(branches) > 1:
+                return False
+            if not branches:
+                return True
+            if steps >= step_limit * 3:
+                raise RuntimeError(
+                    "single-path check exceeded safety limit; "
+                    "please increase --max-decisions or inspect transition logic"
+                )
+            result = env.step(0)
+            branches = result.branches
+            terminated = result.terminated
+            steps += 1
+        return True
 
     def update(self) -> UpdateStats:
         if not self.buffer.steps:

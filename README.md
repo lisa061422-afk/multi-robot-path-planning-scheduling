@@ -85,7 +85,7 @@ README_DFS_SETTINGS.md
 
 ## PPO-guided branch selection
 
-The initial PPO implementation is in `ppo_training/`.  It uses the `3 x 3`
+The initial PPO implementation is in `PPO_model/`.  It uses the `3 x 3`
 map, exactly three robots, strict one-robot-per-intersection mutual exclusion,
 and a shared neural scorer for the variable legal branch set.  The original
 DFS remains the exact ground-truth solver.
@@ -93,10 +93,16 @@ DFS remains the exact ground-truth solver.
 Quick smoke training:
 
 ```powershell
-python -m ppo_training.train --updates 2 --episodes-per-update 4 --fixed-case
+python -m PPO_model.train --updates 2 --episodes-per-update 4 --fixed-case
 ```
 
-See `ppo_training/README.md` and `PPO_DESIGN.md` for the training commands and
+训练并直接导出指标曲线（便于看收敛）：
+
+```powershell
+python -m PPO_model.train --updates 80 --episodes-per-update 16 --plot-after-train
+```
+
+See `PPO_model/README.md` and `PPO_DESIGN.md` for the training commands and
 the mathematical design.
 
 ## Current 3x3 Demo Notes

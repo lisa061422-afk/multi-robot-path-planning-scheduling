@@ -42,6 +42,7 @@ class ThreeByThreeCaseFactory:
         min_initial_release: float = 0.0,
         initial_release_step: float = 0.5,
         fix_shortest_paths: bool = False,
+        max_vehicles_per_entrance: int = 0,
     ) -> None:
         self.seed = int(seed)
         self.rng = random.Random(self.seed)
@@ -49,6 +50,9 @@ class ThreeByThreeCaseFactory:
         self.n_robots = int(n_robots)
         if self.n_robots <= 0:
             raise ValueError("n_robots must be positive")
+        self.max_vehicles_per_entrance = int(max_vehicles_per_entrance)
+        if self.max_vehicles_per_entrance < 0:
+            raise ValueError("max_vehicles_per_entrance must be non-negative")
         self.road_time = float(road_time)
         self.entrance_headway = float(entrance_headway)
         self.min_initial_release = float(min_initial_release)
@@ -65,6 +69,13 @@ class ThreeByThreeCaseFactory:
         set_trajectory_conflict_filter(False)
         self.case_index = 0
         self.ports = tuple(self.traffic_map.port_ids)
+        if (
+            self.max_vehicles_per_entrance > 0
+            and self.n_robots > len(self.ports) * self.max_vehicles_per_entrance
+        ):
+            raise ValueError(
+                "max_vehicles_per_entrance is too small for requested n_robots"
+            )
         if self.randomize:
             self._fixed_requests = None
         else:
@@ -96,7 +107,7 @@ class ThreeByThreeCaseFactory:
             )
         )
         return TrainingCase(
-            name=f"paper_3x3_n3_{self.case_index:06d}",
+            name=f"paper_3x3_n{self.n_robots}_{self.case_index:06d}",
             traffic_map=self.traffic_map,
             requests=tuple(requests),
             plans=plans,
@@ -105,16 +116,28 @@ class ThreeByThreeCaseFactory:
     def _random_requests(self) -> Tuple[Tuple[int, int, int, float], ...]:
         ports = self.ports
         releases = [
-            self.initial_release_step
-            * round(
-                self.rng.uniform(self.min_initial_release, self.max_initial_release)
-                / self.initial_release_step
-            )
+            self.rng.uniform(self.min_initial_release, self.max_initial_release)
             for _ in range(self.n_robots)
         ]
+        entrance_counts: dict[int, int] = {port: 0 for port in ports}
         rows = []
         for vehicle_id in range(1, self.n_robots + 1):
-            entrance, exit_port = self.rng.sample(ports, 2)
+            if self.max_vehicles_per_entrance > 0:
+                available_entrances = [
+                    port
+                    for port, count in entrance_counts.items()
+                    if count < self.max_vehicles_per_entrance
+                ]
+                if not available_entrances:
+                    raise RuntimeError(
+                        "cannot generate random requests under current max_vehicles_per_entrance"
+                    )
+                entrance = self.rng.choice(available_entrances)
+            else:
+                entrance = self.rng.choice(ports)
+            exit_candidates = tuple(port for port in ports if port != entrance)
+            exit_port = self.rng.choice(exit_candidates)
+            entrance_counts[entrance] += 1
             rows.append((vehicle_id, entrance, exit_port, releases[vehicle_id - 1]))
         return tuple(rows)
 
