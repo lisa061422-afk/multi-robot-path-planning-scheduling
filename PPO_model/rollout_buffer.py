@@ -16,6 +16,7 @@ class RolloutStep:
     old_log_prob: float
     reward: float
     value: float
+    expert_value_target: float = float("nan")
     advantage: float = 0.0
     value_target: float = 0.0
 

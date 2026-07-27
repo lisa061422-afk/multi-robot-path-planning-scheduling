@@ -18,6 +18,8 @@ from .encoding import BranchEncoder, EncodingConfig
 from .evaluate import evaluate_against_exact
 from .networks import BranchScoringActor, StateValueCritic
 from .trainer import PPOConfig, PPOTrainer, finite_mean
+from scheduler_models import RelaxedVehiclePlan
+from typing import Sequence
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,6 +30,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes-per-update", type=int, default=16)
     parser.add_argument("--seed", type=int, default=20260721)
     parser.add_argument("--n-robots", type=int, default=3)
+    parser.add_argument(
+        "--n-robots-max",
+        type=int,
+        default=0,
+        help=(
+            "optional fixed-capacity robot count for PPO state/action vectors; "
+            "0 means using --n-robots"
+        ),
+    )
     parser.add_argument(
         "--group-robots",
         default="",
@@ -126,6 +137,33 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1e-12,
         help="epsilon used when reward normalization scale is near zero",
+    )
+    parser.add_argument(
+        "--critic-supervise",
+        action="store_true",
+        help=(
+            "enable online exact-value supervision for critic on visited states "
+            "(on-policy, no actor imitation)"
+        ),
+    )
+    parser.add_argument(
+        "--critic-supervise-weight",
+        type=float,
+        default=0.0,
+        help="weight applied to online critic supervision loss",
+    )
+    parser.add_argument("--distill", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--distill-weight",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--distill-critic-weight",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--lr-schedule",
@@ -237,6 +275,7 @@ def _plot_training_curves(metrics_path: Path, plot_dir: Path) -> Path:
         ("mean_branches", "Mean branching factor", "count"),
         ("actor_loss", "Actor loss", "loss"),
         ("critic_loss", "Critic loss", "loss"),
+        ("critic_supervise_loss", "Critic supervise loss", "loss"),
         ("entropy", "Policy entropy", "entropy"),
         ("scheduled_entropy", "Scheduled entropy", "entropy"),
         ("approx_kl", "Approx KL", "KL"),
@@ -376,6 +415,40 @@ def _linear_schedule(
     return float(start_value + (end_value - start_value) * ratio)
 
 
+def _pad_plans(
+    plans: Sequence[RelaxedVehiclePlan],
+    target_n: int,
+) -> tuple[RelaxedVehiclePlan, ...]:
+    if target_n < 0:
+        raise ValueError("target_n must be non-negative")
+    if len(plans) > target_n:
+        raise ValueError(
+            f"case has {len(plans)} plans, which exceeds target_n={target_n}"
+        )
+    if len(plans) == target_n:
+        return tuple(plans)
+    if not plans:
+        raise ValueError("case plans must be non-empty before padding")
+    if target_n == 0:
+        return ()
+    base_plan = plans[0]
+    max_vehicle_id = max(plan.vehicle_id for plan in plans)
+    out = list(plans)
+    for _ in range(target_n - len(plans)):
+        max_vehicle_id += 1
+        out.append(
+            RelaxedVehiclePlan(
+                vehicle_id=max_vehicle_id,
+                entrance=base_plan.entrance,
+                exit=base_plan.exit,
+                route_options=(),
+                alpha0=0.0,
+                road_time=base_plan.road_time,
+            )
+        )
+    return tuple(out)
+
+
 def _run_training_for_n(
     n_robots: int,
     *,
@@ -386,15 +459,24 @@ def _run_training_for_n(
     schedule: dict[str, float],
     entropy_schedule: str,
     lr_schedule: str,
+    model_n_robots: int | None = None,
     run_index: int = 0,
     total_runs: int = 1,
 ) -> None:
+    if model_n_robots is None:
+        model_n_robots = args.n_robots_max if args.n_robots_max > 0 else n_robots
+    if model_n_robots <= 0:
+        raise ValueError("model_n_robots must be positive")
     run_seed = int(args.seed + run_index * 10007 + n_robots * 101)
     random.seed(run_seed)
     rng = random.Random(run_seed)
     torch.manual_seed(run_seed)
 
-    encoding_config = EncodingConfig(n_robots=n_robots, n_resources=9, n_ports=12)
+    encoding_config = EncodingConfig(
+        n_robots=model_n_robots,
+        n_resources=9,
+        n_ports=12,
+    )
     case_factory = ThreeByThreeCaseFactory(
         seed=run_seed,
         randomize=not args.fixed_case,
@@ -416,7 +498,10 @@ def _run_training_for_n(
         fix_shortest_paths=args.fix_shortest_paths,
     )
     shape_case = reference_case_factory()
-    shape_encoder = BranchEncoder(shape_case.plans, encoding_config)
+    shape_encoder = BranchEncoder(
+        _pad_plans(shape_case.plans, model_n_robots),
+        encoding_config,
+    )
 
     actor = BranchScoringActor(
         shape_encoder.state_dim,
@@ -439,6 +524,7 @@ def _run_training_for_n(
         reward_cost_mode=args.reward_cost_mode,
         reward_norm_mode=args.reward_norm_mode,
         reward_norm_minmax_eps=args.reward_norm_eps,
+        critic_supervise_weight=args.critic_supervise_weight if args.critic_supervise else 0.0,
     )
     trainer = PPOTrainer(
         actor,
@@ -450,10 +536,10 @@ def _run_training_for_n(
     )
 
     checkpoint_path = _resolve_group_path(
-        args.checkpoint, n_robots, run_id=run_id, run_root=run_root
+        args.checkpoint, model_n_robots, run_id=run_id, run_root=run_root
     )
     metrics_path = _resolve_group_path(
-        args.metrics_csv, n_robots, run_id=run_id, run_root=run_root
+        args.metrics_csv, model_n_robots, run_id=run_id, run_root=run_root
     )
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,6 +547,7 @@ def _run_training_for_n(
     print(
         f"=== PPO training group {run_index + 1}/{total_runs} === "
         f"map=3x3 N={n_robots} "
+        f"model_N={model_n_robots} "
         f"alpha0=[{args.min_initial_release},{args.max_initial_release}] "
         f"step={args.initial_release_step} "
         f"state_dim={shape_encoder.state_dim} action_dim={shape_encoder.action_dim}"
@@ -473,6 +560,11 @@ def _run_training_for_n(
         f"cost_mode={args.reward_cost_mode} "
         f"normalization={args.reward_norm_mode} eps={args.reward_norm_eps}"
     )
+    if args.critic_supervise:
+        print(
+            "critic_supervise: "
+            f"weight={args.critic_supervise_weight}"
+        )
     print(
         f"updates={args.updates} episodes/update={args.episodes_per_update} "
         f"seed={run_seed} "
@@ -501,6 +593,7 @@ def _run_training_for_n(
         "mean_contention_pairs",
         "contention_case_rate",
         "elapsed_seconds",
+        "critic_supervise_loss",
     ]
     rows = []
     contention_rows_path = metrics_path.with_name(
@@ -569,7 +662,7 @@ def _run_training_for_n(
         fixed_case = reference_case_factory()
         fixed_eval = evaluate_against_exact(
             actor,
-            fixed_case.plans,
+            _pad_plans(fixed_case.plans, model_n_robots),
             encoding_config=encoding_config,
             device=device,
             run_exact=False,
@@ -596,6 +689,7 @@ def _run_training_for_n(
             ),
             "actor_loss": update_stats.actor_loss,
             "critic_loss": update_stats.critic_loss,
+            "critic_supervise_loss": update_stats.critic_supervise_loss,
             "entropy": update_stats.entropy,
             "scheduled_entropy": current_entropy,
             "learning_rate": effective_learning_rate,
@@ -611,7 +705,7 @@ def _run_training_for_n(
             f"mean_J={row['mean_cost']:.3f} fixed_J={row['fixed_greedy_cost']:.3f} "
             f"entropy={row['entropy']:.3f} sched_ent={row['scheduled_entropy']:.3f} "
             f"lr={row['learning_rate']:.1e} kl={row['approx_kl']:.5f} "
-            f"elapsed={elapsed:.1f}s"
+            f"critic_supervise={row['critic_supervise_loss']:.3f} elapsed={elapsed:.1f}s"
         )
 
         trainer.save_checkpoint(
@@ -630,7 +724,7 @@ def _run_training_for_n(
     final_case = reference_case_factory()
     final_eval = evaluate_against_exact(
         actor,
-        final_case.plans,
+        _pad_plans(final_case.plans, model_n_robots),
         encoding_config=encoding_config,
         device=device,
         run_exact=args.exact_eval,
@@ -647,7 +741,12 @@ def _run_training_for_n(
     if args.plot_after_train:
         default_plots_dir = metrics_path.parent / "plots"
         resolved_plots_dir = (
-            _resolve_group_path(args.plots_dir, n_robots, run_id=run_id, run_root=run_root)
+            _resolve_group_path(
+                args.plots_dir,
+                model_n_robots,
+                run_id=run_id,
+                run_root=run_root,
+            )
             if args.plots_dir
             else default_plots_dir
         )
@@ -668,6 +767,13 @@ def main() -> None:
     group_n_robots = _parse_group_robots(args.group_robots)
     if args.n_robots <= 0:
         raise ValueError("--n-robots must be positive")
+    model_n_robots = args.n_robots_max if args.n_robots_max > 0 else args.n_robots
+    if model_n_robots <= 0:
+        raise ValueError("--n-robots-max must be positive if set")
+    if any(value > model_n_robots for value in group_n_robots or [args.n_robots]):
+        raise ValueError(
+            "--group-robots values (or --n-robots) must be <= --n-robots-max"
+        )
     if group_n_robots and any(value <= 0 for value in group_n_robots):
         raise ValueError("--group-robots must specify positive integers")
     if not group_n_robots:
@@ -684,6 +790,18 @@ def main() -> None:
         raise ValueError("--critic-hidden-layers must be positive")
     if args.reward_norm_eps <= 0:
         raise ValueError("--reward-norm-eps must be positive")
+    if args.distill:
+        args.critic_supervise = True
+        if args.distill_critic_weight is not None:
+            args.critic_supervise_weight = args.distill_critic_weight
+        elif args.distill_weight is not None:
+            args.critic_supervise_weight = args.distill_weight
+    if args.critic_supervise_weight < 0:
+        raise ValueError("--critic-supervise-weight must be non-negative")
+    if args.critic_supervise_weight > 0 and not args.critic_supervise:
+        raise ValueError(
+            "critic-supervise-weight is set but critic-supervise is disabled"
+        )
     if args.max_vehicles_per_entrance < 0:
         raise ValueError("--max-vehicles-per-entrance must be non-negative")
 
@@ -714,9 +832,12 @@ def main() -> None:
         lr_start = lr_end = args.learning_rate
 
     if args.group_robots:
-        print(f"group training enabled: groups={group_n_robots}")
+        print(
+            f"group training enabled: groups={group_n_robots} "
+            f"model_n={model_n_robots}"
+        )
     else:
-        print(f"single training group: N={args.n_robots}")
+        print(f"single training group: N={args.n_robots} model_n={model_n_robots}")
 
     torch.set_num_threads(max(1, int(args.torch_threads)))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -731,9 +852,13 @@ def main() -> None:
     default_checkpoint = "output/ppo_n3/ppo_branch_actor.pt"
     default_metrics = "output/ppo_n3/training_metrics.csv"
     if args.checkpoint == default_checkpoint:
-        args.checkpoint = str(run_root / "{run_id}" / "n{n_robots}" / "ppo_branch_actor.pt")
+        args.checkpoint = str(
+            run_root / "{run_id}" / "n{n_robots}" / "ppo_branch_actor.pt"
+        )
     if args.metrics_csv == default_metrics:
-        args.metrics_csv = str(run_root / "{run_id}" / "n{n_robots}" / "training_metrics.csv")
+        args.metrics_csv = str(
+            run_root / "{run_id}" / "n{n_robots}" / "training_metrics.csv"
+        )
 
     print(f"run id: {run_id}")
     print(f"run root: {run_root}")
@@ -748,6 +873,7 @@ def main() -> None:
             schedule=schedule,
             entropy_schedule=entropy_schedule,
             lr_schedule=lr_schedule,
+            model_n_robots=model_n_robots,
             run_index=run_index,
             total_runs=len(group_n_robots),
         )

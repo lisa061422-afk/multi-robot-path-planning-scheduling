@@ -164,7 +164,7 @@ def shortest_path_delay_upper_bound(
     fixed_plans = apply_entrance_headway(fixed_plans, headway=T_headway)
     result = search_dfs_bb(
         fixed_plans,
-        branch_and_bound=True,
+        branch_and_bound=False,
         verbose=False,
     )
     return result.best_g
@@ -292,10 +292,11 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
         return [
             # 3x3 training case: P1->P7 has path choices after the start
             # intersection, not only at the entrance.
-            # (1,3,12,0.0)
             (1, 3, 6, 0.0),
             (2, 4, 8, 0.0),   
             (3, 12, 5, 0.0),  # I4 -> I3, cross traffic through the middle
+            (4, 8, 12, 0.0),
+            (5, 1, 9, 0.0)
         ]
 
     raise ValueError(f"unknown fixed_map: {fixed_map}")
@@ -574,6 +575,7 @@ def demo_fixed_map(
             plans,
             frontier_depth=1,
             max_workers=2,
+            branch_and_bound=False,
             verbose=True,
         )
     tree_path = write_decision_tree_svg(
@@ -637,12 +639,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enable-path-selection",
         action="store_true",
-        help="enable path-and-schedule co-design (default)",
+        help="enable path-and-schedule co-design",
     )
     parser.add_argument(
         "--n-robots",
         type=int,
-        default=3,
+        default=5,
         help="number of vehicles to include from the built-in request set",
     )
     parser.add_argument(
@@ -662,11 +664,9 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    enable_path_selection = True
+    enable_path_selection = args.enable_path_selection
     if args.fix_shortest_paths:
         enable_path_selection = False
-    elif args.enable_path_selection:
-        enable_path_selection = True
     demo_fixed_map(
         fixed_map=args.fixed_map,
         fixed_shortest_paths=not enable_path_selection,

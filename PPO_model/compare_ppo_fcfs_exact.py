@@ -132,10 +132,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--exact-deadline",
         type=float,
-        default=3.0,
-        help="seconds allowed per exact case; partial cases are excluded from optimality-gap statistics",
+        default=0.0,
+        help=(
+            "seconds allowed per exact case (0 or less means no deadline; "
+            "partial cases are excluded from optimality-gap statistics)"
+        ),
     )
-    parser.add_argument("--exact-max-nodes", type=int, default=100_000)
+    parser.add_argument(
+        "--exact-max-nodes",
+        type=int,
+        default=0,
+        help="node cap per exact case (0 or less means unlimited)",
+    )
     return parser.parse_args()
 
 
@@ -147,8 +155,10 @@ def main() -> None:
         raise ValueError("--episodes must be positive")
     if args.max_vehicles_per_entrance <= 0:
         raise ValueError("--max-vehicles-per-entrance must be positive")
-    if args.exact_deadline <= 0 or args.exact_max_nodes <= 0:
-        raise ValueError("exact limits must be positive")
+    if args.exact_deadline < 0:
+        raise ValueError("exact-deadline must be non-negative")
+    if args.exact_max_nodes < 0:
+        raise ValueError("exact-max-nodes must be non-negative")
 
     run_dir = args.run_dir.resolve()
     output_dir = (
@@ -164,6 +174,9 @@ def main() -> None:
     summary_path = output_dir / "comparison_summary.csv"
     detail_handle = detail_path.open("w", encoding="utf-8", newline="")
     detail_writer: csv.DictWriter | None = None
+
+    exact_deadline = None if args.exact_deadline <= 0.0 else args.exact_deadline
+    exact_max_nodes = None if args.exact_max_nodes <= 0 else args.exact_max_nodes
 
     try:
         for n_robots in range(args.n_min, args.n_max + 1):
@@ -202,10 +215,10 @@ def main() -> None:
                 start = time.perf_counter()
                 exact_result = search_dynamic_codesign_dfs_bb(
                     case.plans,
-                    branch_and_bound=True,
+                    branch_and_bound=False,
                     verbose=False,
-                    deadline=args.exact_deadline,
-                    max_nodes=args.exact_max_nodes,
+                    deadline=exact_deadline,
+                    max_nodes=exact_max_nodes,
                 )
                 exact_seconds = time.perf_counter() - start
                 limited = any(

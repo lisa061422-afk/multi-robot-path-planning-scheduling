@@ -11,6 +11,10 @@ import torch
 from scheduler_models import EPS, RelaxedNode, RelaxedVehiclePlan
 
 
+ROBOT_STATE_SCALARS = 12
+ROBOT_ACTION_SCALARS = 4
+
+
 @dataclass(frozen=True)
 class EncodingConfig:
     n_robots: int = 3
@@ -20,12 +24,33 @@ class EncodingConfig:
     time_scale: float = 10.0
     horizon_scale: float = 100.0
 
+    # Compatibility properties: historical callers use these on EncodingConfig directly.
+    @property
+    def state_dim(self) -> int:
+        per_robot = (
+            ROBOT_STATE_SCALARS
+            + 2 * (self.n_resources + 1)
+            + 3 * self.n_resources
+            + 2 * self.n_ports
+            + self.max_route_options
+        )
+        return 1 + self.n_robots * per_robot
+
+    @property
+    def action_dim(self) -> int:
+        per_robot = (
+            (self.n_resources + 1)
+            + 2 * (self.n_resources + 1)
+            + ROBOT_ACTION_SCALARS
+        )
+        return self.n_robots * per_robot
+
 
 class BranchEncoder:
     """Encode one node and each of its legal outgoing branches."""
 
-    ROBOT_STATE_SCALARS = 10
-    ROBOT_ACTION_SCALARS = 4
+    ROBOT_STATE_SCALARS = ROBOT_STATE_SCALARS
+    ROBOT_ACTION_SCALARS = ROBOT_ACTION_SCALARS
 
     def __init__(
         self,
@@ -73,6 +98,7 @@ class BranchEncoder:
         for n, plan in enumerate(self.plans):
             candidates = node.route_candidates[n]
             task_count = self._task_count(plan, candidates)
+            current_task = node.ni[n] - 1
             current_duration = self._current_duration(node, n, plan, candidates)
             done = node.ni[n] >= task_count and node.r[n] <= EPS
             active = node.r[n] > EPS
@@ -80,6 +106,8 @@ class BranchEncoder:
             free_times = [self._free_time(plan, index) for index in candidates]
             min_free = min(free_times, default=0.0)
             spread = max(free_times, default=min_free) - min_free
+            alpha = self._event_time(node.alpha, n, current_task)
+            gamma = self._event_time(node.gamma, n, current_task)
 
             d_norm = (
                 self._clip(node.d[n] / cfg.time_scale)
@@ -102,12 +130,15 @@ class BranchEncoder:
                 self._clip(spread / cfg.horizon_scale),
                 float(active),
                 float(done),
+                self._clip(alpha / cfg.horizon_scale),
+                self._clip(gamma / cfg.horizon_scale),
             ]
             values.extend(scalars)
 
             requested = self._requested_resource(node, n, plan, candidates)
             values.extend(self._resource_one_hot(requested))
-            values.extend(self._resource_one_hot(node.U_temp[n]))
+            running_resource = node.U_temp[n] if active else None
+            values.extend(self._resource_one_hot(running_resource))
 
             current_mask, upcoming_mask, next_mask = self._route_masks(
                 node,
@@ -274,6 +305,20 @@ class BranchEncoder:
             (len(plan.route_options[index].intersections) for index in candidates),
             default=0,
         )
+
+    @staticmethod
+    def _event_time(
+        table: Sequence[Sequence[float] | None],
+        n: int,
+        task_index0: int,
+    ) -> float:
+        if n >= len(table) or task_index0 < 0:
+            return 0.0
+        row = table[n]
+        if row is None or task_index0 >= len(row):
+            return 0.0
+        value = float(row[task_index0])
+        return value if math.isfinite(value) else 0.0
 
     @staticmethod
     def _free_time(plan: RelaxedVehiclePlan, option_index: int) -> float:

@@ -13,13 +13,14 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
-from scheduler_models import RelaxedVehiclePlan
+from scheduler_models import RelaxedNode, RelaxedVehiclePlan
 
 from .encoding import BranchEncoder, EncodingConfig
 from .environment import DecisionTreeEnv
 from .networks import BranchScoringActor, StateValueCritic
 from .rollout_buffer import RolloutBuffer, RolloutStep
 from trajectory_conflicts import route_ids_conflict
+from coarse_scheduler import search_dynamic_codesign_dfs_bb
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class PPOConfig:
     reward_cost_mode: str = "delta_g"
     reward_norm_mode: str = "none"
     reward_norm_minmax_eps: float = 1e-12
+    critic_supervise_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class UpdateStats:
     approx_kl: float
     clip_fraction: float
     rollout_steps: int
+    critic_supervise_loss: float
 
 
 class PPOTrainer:
@@ -90,6 +93,123 @@ class PPOTrainer:
         self.buffer = RolloutBuffer()
         self.rng = random.Random(seed)
         torch.manual_seed(seed)
+
+    @staticmethod
+    def _canon_scalar(value: float) -> int | float | str:
+        if math.isnan(value):
+            return "nan"
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
+        return round(float(value), 9)
+
+    @staticmethod
+    def _node_signature(node: RelaxedNode) -> tuple:
+        return (
+            round(float(node.tw), 9),
+            round(float(node.g), 9),
+            node.U_temp,
+            node.ni,
+            tuple(PPOTrainer._canon_scalar(v) for v in node.d),
+            tuple(PPOTrainer._canon_scalar(v) for v in node.r),
+            tuple(PPOTrainer._canon_scalar(v) for v in node.o),
+            tuple(tuple(PPOTrainer._canon_scalar(v) for v in row) for row in node.alpha),
+            tuple(tuple(PPOTrainer._canon_scalar(v) for v in row) for row in node.gamma),
+            node.route_candidates,
+        )
+
+    @staticmethod
+    def _best_path(result: object) -> tuple[int, ...]:
+        if not getattr(result, "nodes", None):
+            return ()
+        if result.best_idx < 0:
+            return ()
+        path: list[int] = []
+        idx = result.best_idx
+        while idx >= 0:
+            path.append(int(idx))
+            idx = int(result.nodes[idx].parent)
+        return tuple(reversed(path))
+
+    def _exact_teacher(
+        self,
+        plans: Sequence[RelaxedVehiclePlan],
+    ) -> dict[str, object] | None:
+        try:
+            result = search_dynamic_codesign_dfs_bb(
+                plans,
+                branch_and_bound=False,
+                verbose=False,
+            )
+        except Exception:
+            return None
+
+        if not result.nodes or result.best_idx < 0:
+            return None
+        path = self._best_path(result)
+        if len(path) < 2:
+            return None
+
+        by_signature: dict[tuple, list[int]] = {}
+        for index, node in enumerate(result.nodes):
+            by_signature.setdefault(self._node_signature(node), []).append(index)
+
+        return {
+            "nodes": result.nodes,
+            "by_signature": by_signature,
+            "exact_total_cost": float(result.best_g),
+        }
+
+    @staticmethod
+    def _best_match_exact_index(
+        signature: tuple,
+        by_signature: dict[tuple, list[int]],
+        nodes: Sequence[RelaxedNode],
+        node_g: float,
+    ) -> int | None:
+        candidates = by_signature.get(signature)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return int(candidates[0])
+        return min(
+            candidates,
+            key=lambda idx: abs(float(nodes[idx].g) - float(node_g)),
+        )
+
+    @staticmethod
+    def _pad_plans(
+        plans: Sequence[RelaxedVehiclePlan],
+        target_n: int,
+    ) -> tuple[RelaxedVehiclePlan, ...]:
+        if target_n < 0:
+            raise ValueError("target_n must be non-negative")
+        if len(plans) > target_n:
+            raise ValueError(
+                f"case has {len(plans)} plans, which exceeds target_n={target_n}"
+            )
+        if len(plans) == target_n:
+            return tuple(plans)
+        if not plans:
+            raise ValueError("case plans must be non-empty before padding")
+        if target_n == 0:
+            return ()
+        base_road_time = float(plans[0].road_time)
+        max_vehicle_id = max(plan.vehicle_id for plan in plans)
+        padded = list(plans)
+        for _idx in range(target_n - len(plans)):
+            padded.append(
+                RelaxedVehiclePlan(
+                    vehicle_id=max_vehicle_id + 1 + _idx,
+                    entrance=plans[0].entrance,
+                    exit=plans[0].exit,
+                    route_options=(),
+                    alpha0=0.0,
+                    road_time=base_road_time,
+                )
+            )
+            max_vehicle_id += 1
+        return tuple(padded)
+
 
     @staticmethod
     def _case_contention_profile(
@@ -134,6 +254,8 @@ class PPOTrainer:
         skip_trivial: bool = False,
         case_name: str = "unknown",
     ) -> EpisodeStats:
+        plans = self._pad_plans(plans, self.encoding_config.n_robots)
+
         if skip_trivial and self._is_single_path_case(
             plans,
             max_decisions=self.config.max_decisions_per_episode,
@@ -180,6 +302,11 @@ class PPOTrainer:
         branch_counts: list[int] = []
         rewards: list[float] = []
         total_reward = 0.0
+        exact_teacher = (
+            self._exact_teacher(plans)
+            if self.config.critic_supervise_weight > 0.0
+            else None
+        )
 
         while not terminated:
             if len(episode_steps) >= self.config.max_decisions_per_episode:
@@ -192,6 +319,22 @@ class PPOTrainer:
             actions_cpu = encoder.encode_actions(node, branches)
             state = state_cpu.to(self.device)
             branch_actions = actions_cpu.to(self.device)
+            expert_value_target = float("nan")
+            if exact_teacher is not None:
+                teacher_nodes = exact_teacher["nodes"]  # type: ignore[assignment]
+                by_signature = exact_teacher["by_signature"]  # type: ignore[assignment]
+                exact_total_cost = exact_teacher["exact_total_cost"]  # type: ignore[assignment]
+                signature = self._node_signature(node)
+                exact_idx = self._best_match_exact_index(
+                    signature,
+                    by_signature,  # type: ignore[arg-type]
+                    teacher_nodes,  # type: ignore[arg-type]
+                    float(node.g),
+                )
+                if exact_idx is not None:
+                    expert_value_target = -(
+                        float(exact_total_cost) - float(teacher_nodes[exact_idx].g)
+                    )
 
             with torch.no_grad():
                 logits = self.actor(state, branch_actions)
@@ -215,6 +358,7 @@ class PPOTrainer:
                     old_log_prob=float(log_prob.item()),
                     reward=float(result.reward),
                     value=float(value.item()),
+                    expert_value_target=expert_value_target,
                 )
             )
             node = result.node
@@ -359,6 +503,7 @@ class PPOTrainer:
         entropies: list[float] = []
         kls: list[float] = []
         clip_fractions: list[float] = []
+        critic_supervise_losses: list[float] = []
         count = len(self.buffer.steps)
 
         for _epoch in range(cfg.update_epochs):
@@ -404,7 +549,25 @@ class PPOTrainer:
                 critic_loss = torch.mean(
                     (predictions - value_targets[batch_indices]) ** 2
                 )
-                critic_objective = cfg.value_loss_coef * critic_loss
+                expert_value_targets = torch.tensor(
+                    [
+                        self.buffer.steps[idx].expert_value_target
+                        for idx in indices
+                    ],
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+                expert_mask = torch.isfinite(expert_value_targets)
+                if expert_mask.any() and cfg.critic_supervise_weight > 0.0:
+                    critic_supervise_loss = torch.mean(
+                        (predictions[expert_mask] - expert_value_targets[expert_mask]) ** 2
+                    )
+                else:
+                    critic_supervise_loss = torch.tensor(0.0, device=self.device)
+                critic_objective = (
+                    cfg.value_loss_coef * critic_loss
+                    + cfg.critic_supervise_weight * critic_supervise_loss
+                )
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 critic_objective.backward()
                 nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.max_grad_norm)
@@ -420,6 +583,7 @@ class PPOTrainer:
                 entropies.append(float(entropy.item()))
                 kls.append(float(approx_kl.item()))
                 clip_fractions.append(float(clip_fraction.item()))
+                critic_supervise_losses.append(float(critic_supervise_loss.item()))
 
         return UpdateStats(
             actor_loss=mean(actor_losses),
@@ -428,6 +592,7 @@ class PPOTrainer:
             approx_kl=mean(kls),
             clip_fraction=mean(clip_fractions),
             rollout_steps=count,
+            critic_supervise_loss=mean(critic_supervise_losses),
         )
 
     def _normalize_rewards(self, rewards: list[float]) -> list[float]:

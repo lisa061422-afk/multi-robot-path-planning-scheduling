@@ -241,11 +241,16 @@ def search_parallel_dfs_bb(
     *,
     frontier_depth: int = 1,
     max_workers: int = 2,
+    branch_and_bound: bool = True,
     verbose: bool = True,
 ) -> SearchResult:
     """Compatibility wrapper. Uses serial DFS to avoid stressing the machine."""
 
-    return search_dfs_bb(plans, branch_and_bound=True, verbose=verbose)
+    return search_dfs_bb(
+        plans,
+        branch_and_bound=branch_and_bound,
+        verbose=verbose,
+    )
 
 
 def build_relaxed_vehicle_plan(

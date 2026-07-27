@@ -113,7 +113,7 @@ def evaluate_against_exact(
 
     exact = search_dynamic_codesign_dfs_bb(
         plans,
-        branch_and_bound=True,
+        branch_and_bound=False,
         verbose=False,
     )
     exact_cost = float(exact.best_g)
@@ -161,7 +161,7 @@ def evaluate_against_exact_safely(
 
     exact_result = search_dynamic_codesign_dfs_bb(
         plans,
-        branch_and_bound=True,
+        branch_and_bound=False,
         verbose=False,
         deadline=exact_deadline,
         max_nodes=exact_max_nodes,
