@@ -1,7 +1,12 @@
-# Path Planning and Schedule Co-Design
+# Multi-Robot Path Planning and Scheduling Co-Design
 
 Python prototype for centralized traffic scheduling and path-planning/scheduling
 co-design.
+
+![3x3 warehouse traffic network with two candidate robot routes](assets/network-route-overview.png)
+
+*A 3x3 warehouse traffic network and its graph representation. The blue and
+green paths illustrate two candidate routes from boundary port B3 to B12.*
 
 Current scope:
 
