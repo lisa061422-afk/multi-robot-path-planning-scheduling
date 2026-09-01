@@ -37,6 +37,11 @@ from scheduler_models import (
     VehiclePlan,
 )
 from traffic_map import PortId, RouteOption, TrafficMap
+from trajectory_conflicts import (
+    route_ids_conflict,
+    simultaneous_prefix,
+    trajectory_conflict_filter_enabled,
+)
 
 
 from coarse_expansion import expand_array, expand_node
@@ -236,11 +241,16 @@ def search_parallel_dfs_bb(
     *,
     frontier_depth: int = 1,
     max_workers: int = 2,
+    branch_and_bound: bool = True,
     verbose: bool = True,
 ) -> SearchResult:
     """Compatibility wrapper. Uses serial DFS to avoid stressing the machine."""
 
-    return search_dfs_bb(plans, branch_and_bound=True, verbose=verbose)
+    return search_dfs_bb(
+        plans,
+        branch_and_bound=branch_and_bound,
+        verbose=verbose,
+    )
 
 
 def build_relaxed_vehicle_plan(
@@ -315,10 +325,10 @@ def _route_option_movements(
     intersections = list(option.intersections)
     out: List[Dict[str, object]] = []
     for k, traversal in enumerate(option.traversals):
-        prev_label = f"P{entrance}" if k == 0 else f"I{intersections[k - 1]}"
+        prev_label = f"B{entrance}" if k == 0 else f"I{intersections[k - 1]}"
         node_label = f"I{traversal.intersection}"
         next_label = (
-            f"P{exit_port}"
+            f"B{exit_port}"
             if k == len(intersections) - 1
             else f"I{intersections[k + 1]}"
         )
@@ -343,7 +353,6 @@ def _route_option_movements(
 def search_relaxed_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     deadline: Optional[float] = None,
     max_nodes: Optional[int] = None,
     branch_and_bound: bool = True,
@@ -397,7 +406,7 @@ def search_relaxed_dfs_bb(
                 idx=combo_idx,
                 parent=0,
                 tw=0.0,
-                g=lambda_path * g_path,
+                g=g_path,
                 g_delay=0.0,
                 g_path=g_path,
                 segments=(),
@@ -413,7 +422,7 @@ def search_relaxed_dfs_bb(
             idx = len(nodes)
             index_map[fixed_node.idx] = idx
             g_delay = fixed_node.g
-            g = g_delay + lambda_path * g_path
+            g = g_delay + g_path
             node = RelaxedNode(
                 idx=idx,
                 parent=index_map.get(fixed_node.parent, combo_idx),
@@ -478,7 +487,6 @@ def _solve_relaxed_choice_worker(args):
         order,
         choices,
         plans,
-        lambda_path,
         deadline,
         max_nodes,
         branch_and_bound,
@@ -503,13 +511,12 @@ def _solve_relaxed_choice_worker(args):
         for plan, choice in zip(plans, choices)
     ]
     g_path = sum(max(0.0, chosen - base) for chosen, base in zip(chosen_times, base_times))
-    return order, tuple(choices), fixed_result, g_path, lambda_path * g_path
+    return order, tuple(choices), fixed_result, g_path, g_path
 
 
 def search_relaxed_parallel_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     deadline: Optional[float] = None,
     max_nodes: Optional[int] = None,
     branch_and_bound: bool = True,
@@ -530,7 +537,6 @@ def search_relaxed_parallel_dfs_bb(
     if max_workers <= 1 or len(choice_list) <= 1:
         return search_relaxed_dfs_bb(
             plans,
-            lambda_path=lambda_path,
             deadline=deadline,
             max_nodes=max_nodes,
             branch_and_bound=branch_and_bound,
@@ -543,7 +549,6 @@ def search_relaxed_parallel_dfs_bb(
             order,
             choice,
             tuple(plans),
-            lambda_path,
             deadline,
             max_nodes,
             branch_and_bound,
@@ -601,7 +606,7 @@ def search_relaxed_parallel_dfs_bb(
                 idx=idx,
                 parent=index_map.get(fixed_node.parent, combo_idx),
                 tw=fixed_node.tw,
-                g=g_delay + lambda_path * g_path,
+                g=g_delay + g_path,
                 g_delay=g_delay,
                 g_path=g_path,
                 segments=fixed_node.segments,
@@ -690,7 +695,7 @@ def _dynamic_traversal_signature(
     if task_index0 + 1 < len(option.intersections):
         next_label = f"I{option.intersections[task_index0 + 1]}"
     else:
-        next_label = f"P{plan.exit}"
+        next_label = f"B{plan.exit}"
     return (
         traversal.intersection,
         traversal.route_id,
@@ -752,12 +757,10 @@ def _dynamic_path_decision(
         return None
     return (vehicle_id, option_display, from_i, int(next_label[1:]), tw, extra)
 
-
+# path selection
 def _dynamic_path_choice_children(
     c: RelaxedNode,
     plans: Sequence[RelaxedVehiclePlan],
-    *,
-    lambda_path: float,
 ) -> List[RelaxedNode]:
     simultaneous_choices: List[
         Tuple[
@@ -827,7 +830,7 @@ def _dynamic_path_choice_children(
                 c,
                 idx=-1,
                 parent=c.idx,
-                g=c.g + lambda_path * total_extra,
+                g=c.g + total_extra,
                 g_path=c.g_path + total_extra,
                 route_candidates=tuple(route_candidates),
                 path_decisions=tuple(path_decisions),
@@ -862,6 +865,7 @@ def _dynamic_valid_running_choices(
     c: RelaxedNode,
     U_c: Tuple[Optional[int], ...],
     ra: Sequence[float],
+    ni2: Sequence[int],
     plans: Sequence[RelaxedVehiclePlan],
 ) -> Tuple[Tuple[Optional[int], ...], ...]:
     by_resource: Dict[int, List[int]] = {}
@@ -894,12 +898,19 @@ def _dynamic_valid_running_choices(
         per_resource_options.append((resource, options))
 
     choices: List[Tuple[Optional[int], ...]] = []
+    route_ids = []
+    for n, plan in enumerate(plans):
+        if ni2[n] < 1:
+            route_ids.append(-1)
+            continue
+        option = plan.route_options[c.route_candidates[n][0]]
+        route_ids.append(option.traversals[ni2[n] - 1].route_id)
     products = itertools.product(*(item[1] for item in per_resource_options))
     for queues in products:
         U_temp: List[Optional[int]] = [None for _ in plans]
         for (resource, _options), queue in zip(per_resource_options, queues):
-            if queue:
-                U_temp[queue[0]] = resource
+            for n in simultaneous_prefix(queue, route_ids):
+                U_temp[n] = resource
         choices.append(tuple(U_temp))
     return tuple(choices) if choices else (tuple(None for _ in plans),)
 
@@ -930,7 +941,7 @@ def _dynamic_reset_interrupted_repeat_tasks(
     return tuple(out)
 
 
-def _dynamic_next_sig_m(
+def NextSigM(
     tw: float,
     da: Sequence[float],
     ra: Sequence[float],
@@ -972,7 +983,7 @@ def _dynamic_next_sig_m(
     return tuple(d2), tuple(r2), tuple(o2), tw1
 
 
-def _dynamic_make_child(
+def NewNode(
     c: RelaxedNode,
     plans: Sequence[RelaxedVehiclePlan],
     d2: Tuple[float, ...],
@@ -1082,24 +1093,21 @@ def _dynamic_make_child(
     )
 
 
-def _expand_dynamic_codesign_node(
+def expand_array_IN(
     nodes: Sequence[RelaxedNode],
     c_idx: int,
     plans: Sequence[RelaxedVehiclePlan],
-    *,
-    lambda_path: float,
 ) -> Tuple[List[RelaxedNode], bool]:
     c = nodes[c_idx]
-    path_children = _dynamic_path_choice_children(c, plans, lambda_path=lambda_path)
+    path_children = _dynamic_path_choice_children(c, plans)
     if path_children:
         merged_children: List[RelaxedNode] = []
         for path_child in path_children:
             temp_node = replace(path_child, idx=c.idx, parent=c.parent)
-            next_children, is_leaf = _expand_dynamic_codesign_node(
+            next_children, is_leaf = expand_array_IN(
                 (temp_node,),
                 0,
                 plans,
-                lambda_path=lambda_path,
             )
             if is_leaf:
                 merged_children.append(replace(temp_node, idx=-1, parent=c.idx))
@@ -1159,8 +1167,8 @@ def _expand_dynamic_codesign_node(
 
     if not active:
         U_temp = tuple(None for _ in plans)
-        d2, r2, o2, tw1 = _dynamic_next_sig_m(c.tw, da, ra, oa, U_temp)
-        child = _dynamic_make_child(
+        d2, r2, o2, tw1 = NextSigM(c.tw, da, ra, oa, U_temp)
+        child = NewNode(
             c,
             plans,
             d2,
@@ -1176,8 +1184,8 @@ def _expand_dynamic_codesign_node(
         return [child], False
 
     children: List[RelaxedNode] = []
-    for U_temp in _dynamic_valid_running_choices(c, U_c, ra, plans):
-        ra_for_step = _dynamic_reset_interrupted_repeat_tasks(
+    for U_temp in _dynamic_valid_running_choices(c, U_c, ra, ni2, plans):
+        ra_temp = _dynamic_reset_interrupted_repeat_tasks(
             c,
             plans,
             U_c,
@@ -1185,8 +1193,8 @@ def _expand_dynamic_codesign_node(
             ra,
             ni2,
         )
-        d2, r2, o2, tw1 = _dynamic_next_sig_m(c.tw, da, ra_for_step, oa, U_temp)
-        child = _dynamic_make_child(
+        d2, r2, o2, tw1 = NextSigM(c.tw, da, ra_temp, oa, U_temp)
+        child = NewNode(
             c,
             plans,
             d2,
@@ -1196,7 +1204,7 @@ def _expand_dynamic_codesign_node(
             ni2,
             U_c,
             U_temp,
-            ra_for_step,
+            ra_temp,
             alpha,
         )
         children.append(child)
@@ -1216,10 +1224,43 @@ def _expand_dynamic_codesign_node(
     return list(unique.values()), False
 
 
+# Backward-compatible aliases for callers using the earlier Python names.
+_dynamic_next_sig_m = NextSigM
+_dynamic_make_child = NewNode
+_expand_dynamic_codesign_node = expand_array_IN
+
+
+def make_dynamic_codesign_root(
+    plans: Sequence[RelaxedVehiclePlan],
+) -> RelaxedNode:
+    """Return the root node used by dynamic path/scheduling co-design.
+
+    This small public interface lets an RL environment reuse the exact same
+    state initialization as the DFS ground-truth solver without importing a
+    private helper.
+    """
+
+    return _dynamic_root(plans)
+
+
+def expand_dynamic_codesign_node(
+    node: RelaxedNode,
+    plans: Sequence[RelaxedVehiclePlan],
+) -> Tuple[List[RelaxedNode], bool]:
+    """Generate every immediate child of ``node`` without DFS pruning.
+
+    The returned children are exactly the feasible branches produced by the
+    dynamic co-design transition model.  No incumbent cost, deadline, or node
+    limit is applied.  ``is_leaf`` is true only when all vehicle tasks have
+    completed.
+    """
+
+    return expand_array_IN((node,), 0, plans)
+
+
 def search_dynamic_codesign_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     deadline: Optional[float] = None,
     max_nodes: Optional[int] = None,
     branch_and_bound: bool = True,
@@ -1258,11 +1299,10 @@ def search_dynamic_codesign_dfs_bb(
             pruned += 1
             continue
 
-        children, is_leaf = _expand_dynamic_codesign_node(
+        children, is_leaf = expand_array_IN(
             nodes,
             c_idx,
             plans,
-            lambda_path=lambda_path,
         )
         if is_leaf:
             leaves.append(c_idx)
@@ -1307,7 +1347,6 @@ def search_dynamic_codesign_dfs_bb(
 def _collect_dynamic_frontier(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float,
     frontier_depth: int,
 ) -> Tuple[List[RelaxedNode], List[int], List[int]]:
     root = _dynamic_root(plans)
@@ -1318,11 +1357,10 @@ def _collect_dynamic_frontier(
     for _level in range(max(0, frontier_depth)):
         next_frontier: List[int] = []
         for c_idx in frontier:
-            children, is_leaf = _expand_dynamic_codesign_node(
+            children, is_leaf = expand_array_IN(
                 nodes,
                 c_idx,
                 plans,
-                lambda_path=lambda_path,
             )
             if is_leaf:
                 leaves.append(c_idx)
@@ -1343,7 +1381,6 @@ def _search_dynamic_subtree_worker(args):
         order,
         frontier_node,
         plans,
-        lambda_path,
         branch_and_bound,
         deadline,
         max_nodes,
@@ -1371,11 +1408,10 @@ def _search_dynamic_subtree_worker(args):
             pruned += 1
             continue
 
-        children, is_leaf = _expand_dynamic_codesign_node(
+        children, is_leaf = expand_array_IN(
             nodes,
             c_idx,
             plans,
-            lambda_path=lambda_path,
         )
         if is_leaf:
             leaves.append(c_idx)
@@ -1399,7 +1435,6 @@ def _search_dynamic_subtree_worker(args):
 def search_dynamic_codesign_parallel_dfs_bb(
     plans: Sequence[RelaxedVehiclePlan],
     *,
-    lambda_path: float = 1.0,
     frontier_depth: int = 2,
     max_workers: int = 4,
     deadline: Optional[float] = None,
@@ -1418,7 +1453,6 @@ def search_dynamic_codesign_parallel_dfs_bb(
     t0 = time.perf_counter()
     prefix_nodes, frontier, prefix_leaves = _collect_dynamic_frontier(
         plans,
-        lambda_path=lambda_path,
         frontier_depth=frontier_depth,
     )
 
@@ -1439,7 +1473,6 @@ def search_dynamic_codesign_parallel_dfs_bb(
     if workers <= 1:
         return search_dynamic_codesign_dfs_bb(
             plans,
-            lambda_path=lambda_path,
             deadline=deadline,
             max_nodes=max_nodes,
             branch_and_bound=branch_and_bound,
@@ -1451,7 +1484,6 @@ def search_dynamic_codesign_parallel_dfs_bb(
             order,
             prefix_nodes[frontier_idx],
             tuple(plans),
-            lambda_path,
             branch_and_bound,
             deadline,
             max_nodes,
@@ -1533,7 +1565,6 @@ def _ensure_parent(path: str | Path) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
-
 def write_decision_tree_svg(
     result,
     path: str | Path,
@@ -1614,33 +1645,100 @@ def write_interactive_solution_html(
     plans: Sequence,
     tmap: Optional[TrafficMap] = None,
     max_terminal_paths: Optional[int] = None,
-    lambda_path: float = 1.0,
+    max_tree_nodes: Optional[int] = None,
 ) -> Path:
     p = _ensure_parent(path)
     all_terminals = list(result.leaves) if result.leaves else [result.best_idx]
     all_terminals = [idx for idx in all_terminals if idx >= 0]
     node_by_idx = {node.idx: node for node in result.nodes}
 
-    selected_terminals = list(all_terminals)
-    if max_terminal_paths is not None and len(selected_terminals) > max_terminal_paths:
-        keep_count = max(1, int(max_terminal_paths))
-        best = result.best_idx
-        others = [idx for idx in selected_terminals if idx != best]
-        others = sorted(
-            others,
-            key=lambda idx: (getattr(node_by_idx[idx], "g", math.inf), idx),
-        )
-        selected_terminals = ([best] if best in node_by_idx else []) + others
-        selected_terminals = selected_terminals[:keep_count]
-        if best in node_by_idx and best not in selected_terminals:
-            selected_terminals[-1] = best
-
-    included = set()
-    for terminal in selected_terminals:
+    def terminal_path(terminal: int) -> Tuple[int, ...]:
+        chain = []
         cur = terminal
-        while cur >= 0 and cur in node_by_idx and cur not in included:
-            included.add(cur)
+        while cur >= 0 and cur in node_by_idx:
+            chain.append(cur)
             cur = node_by_idx[cur].parent
+        return tuple(reversed(chain))
+
+    terminal_paths = {terminal: terminal_path(terminal) for terminal in all_terminals}
+    selected_terminals = list(all_terminals)
+    included = set(node_by_idx)
+    if max_terminal_paths is not None or max_tree_nodes is not None:
+        path_limit = (
+            len(all_terminals)
+            if max_terminal_paths is None
+            else max(1, int(max_terminal_paths))
+        )
+        node_limit = (
+            len(node_by_idx)
+            if max_tree_nodes is None
+            else max(1, int(max_tree_nodes))
+        )
+        best = result.best_idx
+        score_key = lambda idx: (getattr(node_by_idx[idx], "g", math.inf), idx)
+
+        # Preserve branch diversity: best path first, then the best terminal
+        # under each root child, then the remaining terminals by objective.
+        representatives: Dict[int, int] = {}
+        for terminal, chain in terminal_paths.items():
+            branch = chain[1] if len(chain) > 1 else chain[0]
+            current = representatives.get(branch)
+            if current is None or score_key(terminal) < score_key(current):
+                representatives[branch] = terminal
+        ranked = []
+        for terminal in [
+            best,
+            *sorted(representatives.values(), key=score_key),
+            *sorted(all_terminals, key=score_key),
+        ]:
+            if terminal in terminal_paths and terminal not in ranked:
+                ranked.append(terminal)
+
+        selected_terminals = []
+        included = set()
+        for terminal in ranked:
+            if len(selected_terminals) >= path_limit:
+                break
+            candidate_nodes = set(terminal_paths[terminal])
+            expanded = included | candidate_nodes
+            if selected_terminals and len(expanded) > node_limit:
+                continue
+            selected_terminals.append(terminal)
+            included = expanded
+        if not selected_terminals and ranked:
+            selected_terminals = [ranked[0]]
+            included = set(terminal_paths[ranked[0]])
+
+    children_by_parent: Dict[int, List[int]] = {}
+    for node in result.nodes:
+        children_by_parent.setdefault(node.parent, []).append(node.idx)
+    terminal_set = set(all_terminals)
+    subtree_nodes: Dict[int, int] = {}
+    subtree_terminals: Dict[int, int] = {}
+    for node in reversed(result.nodes):
+        children = children_by_parent.get(node.idx, [])
+        subtree_nodes[node.idx] = 1 + sum(subtree_nodes.get(child, 0) for child in children)
+        subtree_terminals[node.idx] = (
+            (1 if node.idx in terminal_set else 0)
+            + sum(subtree_terminals.get(child, 0) for child in children)
+        )
+
+    omitted_branches = []
+    for parent in sorted(included):
+        hidden_children = [
+            child
+            for child in children_by_parent.get(parent, [])
+            if child not in included
+        ]
+        if not hidden_children:
+            continue
+        omitted_branches.append(
+            {
+                "parent": parent,
+                "path_count": sum(subtree_terminals.get(child, 0) for child in hidden_children),
+                "node_count": sum(subtree_nodes.get(child, 0) for child in hidden_children),
+            }
+        )
 
     nodes = []
     for node in result.nodes:
@@ -1701,6 +1799,14 @@ def write_interactive_solution_html(
         if hasattr(plan, "route_options"):
             options = []
             base = min(_free_time(opt, plan.road_time) for opt in plan.route_options)
+            shortest_index = min(
+                range(len(plan.route_options)),
+                key=lambda j: (
+                    len(plan.route_options[j].intersections),
+                    _free_time(plan.route_options[j], plan.road_time),
+                    plan.route_options[j].id,
+                ),
+            )
             for j, option in enumerate(plan.route_options):
                 options.append(
                     {
@@ -1720,6 +1826,7 @@ def write_interactive_solution_html(
                     "vehicle_id": plan.vehicle_id,
                     "entrance": plan.entrance,
                     "exit": plan.exit,
+                    "shortest_index": shortest_index,
                     "options": options,
                 }
             )
@@ -1732,6 +1839,10 @@ def write_interactive_solution_html(
                         [trav.turn for trav in option.traversals]
                         for option in plan.route_options
                     ],
+                    "route_ids_by_option": [
+                        [trav.route_id for trav in option.traversals]
+                        for option in plan.route_options
+                    ],
                     "resources_by_option": [
                         list(option.intersections) for option in plan.route_options
                     ],
@@ -1742,6 +1853,14 @@ def write_interactive_solution_html(
                 route_options = tmap.route_options(plan.entrance, plan.exit)
                 base = min(_free_time(opt, plan.road_time) for opt in route_options)
                 selected_index = 0
+                shortest_index = min(
+                    range(len(route_options)),
+                    key=lambda j: (
+                        len(route_options[j].intersections),
+                        _free_time(route_options[j], plan.road_time),
+                        route_options[j].id,
+                    ),
+                )
                 options = []
                 for j, option in enumerate(route_options):
                     if option.intersections == plan.route.intersections:
@@ -1765,6 +1884,7 @@ def write_interactive_solution_html(
                         "entrance": plan.entrance,
                         "exit": plan.exit,
                         "selected_index": selected_index,
+                        "shortest_index": shortest_index,
                         "options": options,
                     }
                 )
@@ -1774,6 +1894,7 @@ def write_interactive_solution_html(
                     "entrance": plan.entrance,
                     "exit": plan.exit,
                     "turns": [trav.turn for trav in plan.route.traversals],
+                    "route_ids": [trav.route_id for trav in plan.route.traversals],
                     "resources": list(plan.resources),
                 }
             )
@@ -1818,6 +1939,9 @@ def write_interactive_solution_html(
         "terminal_count_shown": len(selected_terminals),
         "node_count_total": len(result.nodes),
         "node_count_shown": len(nodes),
+        "omitted_branches": omitted_branches,
+        "max_terminal_paths": max_terminal_paths,
+        "max_tree_nodes": max_tree_nodes,
         "best_idx": result.best_idx,
         "plans": plan_data,
         "path_trees": path_trees,
@@ -1825,7 +1949,13 @@ def write_interactive_solution_html(
         "ports": ports,
         "roads": roads,
         "resources": resources,
-        "lambda_path": lambda_path,
+        "trajectory_conflict_filter": trajectory_conflict_filter_enabled(),
+        "conflicting_route_pairs": [
+            [left, right]
+            for left in range(1, 13)
+            for right in range(left, 13)
+            if route_ids_conflict(left, right)
+        ],
     }
 
     data_json = json.dumps(data, ensure_ascii=False)
@@ -1848,9 +1978,22 @@ def write_interactive_solution_html(
     .pane {{ background:white; border:1px solid #d1d5db; border-radius:6px; overflow:auto; }}
     .splitter {{ cursor:col-resize; border-radius:6px; background:linear-gradient(90deg, transparent 0 2px, #cbd5e1 2px 6px, transparent 6px 8px); }}
     .splitter:hover, .splitter.dragging {{ background:linear-gradient(90deg, transparent 0 2px, #64748b 2px 6px, transparent 6px 8px); }}
-    #treeSvg {{ width:100%; height:520px; display:block; cursor:default; user-select:none; touch-action:pan-x pan-y; }}
-    #basicMapPanel {{ padding:0 10px 12px; display:grid; justify-items:start; }}
-    #basicMapPanel svg {{ display:block; max-width:100%; height:auto; }}
+    .tree-header {{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:10px 12px 4px; }}
+    .tree-header h2 {{ margin:0; }}
+    .tree-toolbar {{ display:flex; align-items:center; flex-wrap:wrap; gap:4px; }}
+    .tree-toolbar button {{ border:1px solid #cbd5e1; border-radius:4px; background:#fff; color:#334155; padding:3px 7px; font-size:11px; font-weight:700; cursor:pointer; }}
+    .tree-toolbar button:hover, .tree-toolbar button.active {{ border-color:#2563eb; background:#eff6ff; color:#1d4ed8; }}
+    .tree-summary {{ margin:0 12px 7px; padding:5px 8px; border:1px solid #fde68a; border-radius:5px; background:#fffbeb; color:#92400e; font-size:11px; font-weight:700; }}
+    .tree-stage {{ position:relative; height:60vh; min-height:420px; max-height:720px; margin:0 10px 12px; border:1px solid #dbe3ef; border-radius:6px; overflow:hidden; background:#fff; }}
+    #treeSvg {{ width:100%; height:100%; display:block; cursor:default; user-select:none; touch-action:none; }}
+    #treeSvg.zoomed {{ cursor:grab; }}
+    #treeSvg.dragging {{ cursor:grabbing; }}
+    .tree-magnifier {{ position:absolute; right:10px; top:10px; width:280px; height:190px; border:2px solid #2563eb; border-radius:7px; background:rgba(255,255,255,0.97); box-shadow:0 4px 18px rgba(15,23,42,0.18); overflow:hidden; pointer-events:none; display:none; }}
+    .tree-magnifier.visible {{ display:block; }}
+    .tree-magnifier-label {{ position:absolute; left:5px; top:4px; z-index:2; max-width:265px; padding:2px 5px; border-radius:3px; background:rgba(255,255,255,0.9); color:#1e3a8a; font-size:10px; font-weight:700; }}
+    #treeLensSvg {{ width:100%; height:100%; display:block; }}
+    #basicMapPanel, #selectedPathMapPanel {{ padding:0 10px 12px; display:grid; justify-items:start; }}
+    #basicMapPanel svg, #selectedPathMapPanel svg {{ display:block; max-width:100%; height:auto; }}
     #pathSummaryPanel {{ padding:0 10px 10px; }}
     .path-table {{ border-collapse:collapse; font-size:11px; min-width:720px; max-width:100%; margin-bottom:8px; }}
     .path-table th, .path-table td {{ border:1px solid #d1d5db; padding:4px 6px; text-align:left; vertical-align:top; }}
@@ -1877,22 +2020,40 @@ def write_interactive_solution_html(
 </head>
 <body>
   <header>
-    <div><h1>Interactive Coarse Solution</h1><div class="hint">Use Left/Right or Up/Down keys to switch tree paths. Wheel zooms the decision tree; double-click resets.</div></div>
+    <div><h1>Interactive Coarse Solution</h1><div class="hint">Use arrow keys to switch displayed paths. Use the tree toolbar or Ctrl+wheel to zoom; drag only while zoomed.</div></div>
     <div id="meta"></div>
   </header>
   <main class="layout" id="mainLayout">
     <section class="pane">
-      <h2>Decision Tree</h2>
+      <div class="tree-header">
+        <h2>Decision Tree</h2>
+        <div class="tree-toolbar">
+          <button id="treeZoomOut" type="button" title="Zoom out around the viewport center">−</button>
+          <button id="treeZoomIn" type="button" title="Zoom in around the viewport center">+</button>
+          <button id="treeFitAll" type="button">Fit tree</button>
+          <button id="treeFitPath" type="button">Fit selected path</button>
+          <button id="treeMagnifierToggle" type="button" class="active">Magnifier</button>
+        </div>
+      </div>
       <div class="notation">Notation: z<sub>nq</sub>(i,j)(tw) means vehicle Nn selects path option q from Ii to Ij at time tw; q is displayed from 1, while decision-tree node IDs start from 0. v<sub>in</sub>(tw) means vehicle Nn occupies Ii at time tw.</div>
-      <svg id="treeSvg"></svg>
-      <h2>Basic Map</h2>
-      <div id="basicMapPanel"></div>
+      <div class="tree-summary" id="treeSummary"></div>
+      <div class="tree-stage" id="treeStage">
+        <svg id="treeSvg"></svg>
+        <div class="tree-magnifier" id="treeMagnifier">
+          <div class="tree-magnifier-label" id="treeMagnifierLabel"></div>
+          <svg id="treeLensSvg"><use href="#treeScene"></use></svg>
+        </div>
+      </div>
+      <h2>Vehicle Path Branch Trees</h2>
+      <div id="pathTreePanel"></div>
       <h2>Vehicle Path Options</h2>
       <div id="pathSummaryPanel"></div>
       <h2>Path Selection Branches</h2>
       <div id="pathBranchPanel"></div>
-      <h2>Vehicle Path Branch Trees</h2>
-      <div id="pathTreePanel"></div>
+      <h2>Basic Map</h2>
+      <div id="basicMapPanel"></div>
+      <h2>Selected Path Top View</h2>
+      <div id="selectedPathMapPanel"></div>
     </section>
     <div class="splitter" id="splitter" title="Drag to resize panels; double-click to reset"></div>
     <section class="pane">
@@ -1908,8 +2069,10 @@ def write_interactive_solution_html(
     let cursor = Math.max(0, terminals.indexOf(DATA.best_idx));
     let treeBaseViewBox = null;
     let treeViewBox = null;
+    let treeSelectedBounds = null;
     let treeDrag = null;
     let splitterDrag = null;
+    let treeMagnifierEnabled = true;
 
     function el(name, attrs={{}}, text=null) {{
       const e = document.createElementNS(NS, name);
@@ -1935,11 +2098,43 @@ def write_interactive_solution_html(
     function applyTreeViewBox() {{
       const svg = document.getElementById("treeSvg");
       if (treeViewBox) svg.setAttribute("viewBox", treeViewBox.join(" "));
+      const zoomed = treeBaseViewBox && treeViewBox && treeViewBox[2] < treeBaseViewBox[2] * 0.995;
+      svg.classList.toggle("zoomed", Boolean(zoomed));
     }}
 
     function resetTreeZoom() {{
       if (!treeBaseViewBox) return;
       treeViewBox = treeBaseViewBox.slice();
+      applyTreeViewBox();
+    }}
+
+    function zoomTreeAtCenter(factor) {{
+      if (!treeViewBox || !treeBaseViewBox) return;
+      const minW = treeBaseViewBox[2] * 0.08;
+      const maxW = treeBaseViewBox[2];
+      const nextW = Math.min(maxW, Math.max(minW, treeViewBox[2] * factor));
+      const ratio = nextW / treeViewBox[2];
+      const nextH = treeViewBox[3] * ratio;
+      const cx = treeViewBox[0] + treeViewBox[2] / 2;
+      const cy = treeViewBox[1] + treeViewBox[3] / 2;
+      treeViewBox = [cx - nextW / 2, cy - nextH / 2, nextW, nextH];
+      applyTreeViewBox();
+    }}
+
+    function fitSelectedTreePath() {{
+      if (!treeSelectedBounds || !treeBaseViewBox) return;
+      const padX = Math.max(35, (treeSelectedBounds.x2 - treeSelectedBounds.x1) * 0.12);
+      const padY = Math.max(35, (treeSelectedBounds.y2 - treeSelectedBounds.y1) * 0.25);
+      const width = Math.max(90, treeSelectedBounds.x2 - treeSelectedBounds.x1 + 2 * padX);
+      const height = Math.max(90, treeSelectedBounds.y2 - treeSelectedBounds.y1 + 2 * padY);
+      const stage = document.getElementById("treeStage").getBoundingClientRect();
+      const aspect = Math.max(0.2, stage.width / Math.max(1, stage.height));
+      let viewW = width, viewH = height;
+      if (viewW / viewH < aspect) viewW = viewH * aspect;
+      else viewH = viewW / aspect;
+      const cx = (treeSelectedBounds.x1 + treeSelectedBounds.x2) / 2;
+      const cy = (treeSelectedBounds.y1 + treeSelectedBounds.y2) / 2;
+      treeViewBox = [cx - viewW / 2, cy - viewH / 2, viewW, viewH];
       applyTreeViewBox();
     }}
 
@@ -2146,13 +2341,27 @@ def write_interactive_solution_html(
       }});
     }}
 
+    function updateTreeMagnifier(x, y, label) {{
+      if (!treeMagnifierEnabled) return;
+      const lens = document.getElementById("treeMagnifier");
+      const lensSvg = document.getElementById("treeLensSvg");
+      lensSvg.setAttribute("viewBox", `${{x-95}} ${{y-65}} 190 130`);
+      document.getElementById("treeMagnifierLabel").textContent = label;
+      lens.classList.add("visible");
+    }}
+
     function renderTree() {{
       const selected = terminals[cursor];
       const selectedPath = new Set(pathTo(selected));
       const bestPath = new Set(pathTo(DATA.best_idx));
+      const summaryNodes = (DATA.omitted_branches || []).map((item, index) => ({{
+        idx:`omitted-${{index}}`, parent:item.parent, omitted:true,
+        path_count:item.path_count, node_count:item.node_count
+      }}));
+      const displayNodes = [...DATA.nodes, ...summaryNodes];
       const levels = new Map();
       const depths = new Map();
-      for (const n of DATA.nodes) {{
+      for (const n of displayNodes) {{
         const d = n.parent < 0 ? 0 : (depths.get(n.parent) || 0) + 1;
         depths.set(n.idx, d);
         if (!levels.has(d)) levels.set(d, []);
@@ -2181,8 +2390,18 @@ def write_interactive_solution_html(
         const startY = height / 2 - (ids.length - 1) * yGap / 2;
         ids.forEach((id, r) => pos.set(id, [margin + (xByDepth[d] || 0), startY + r * yGap]));
       }}
+      const selectedPoints = [...selectedPath].map(id => pos.get(id)).filter(Boolean);
+      treeSelectedBounds = selectedPoints.length ? {{
+        x1:Math.min(...selectedPoints.map(point => point[0])),
+        x2:Math.max(...selectedPoints.map(point => point[0])),
+        y1:Math.min(...selectedPoints.map(point => point[1])),
+        y2:Math.max(...selectedPoints.map(point => point[1]))
+      }} : null;
+
       const svg = document.getElementById("treeSvg");
       svg.innerHTML = "";
+      const scene = el("g", {{id:"treeScene"}});
+      svg.appendChild(scene);
       const nextBaseViewBox = [0, 0, width, height];
       if (!sameTreeBox(treeBaseViewBox, nextBaseViewBox)) {{
         treeBaseViewBox = nextBaseViewBox;
@@ -2190,35 +2409,60 @@ def write_interactive_solution_html(
       }}
       applyTreeViewBox();
       const occupiedLabels = [];
-      for (const n of DATA.nodes) {{
+      for (const n of displayNodes) {{
         const [x,y] = pos.get(n.idx);
-        occupiedLabels.push({{x1:x-20, x2:x+20, y1:y-34, y2:y+18}});
+        occupiedLabels.push({{x1:x-38, x2:x+38, y1:y-34, y2:y+22}});
       }}
-      for (const n of DATA.nodes) {{
+      for (const n of displayNodes) {{
         if (n.parent < 0) continue;
-        const parent = nodeById.get(n.parent);
         const [x1,y1] = pos.get(n.parent);
         const [x2,y2] = pos.get(n.idx);
+        if (n.omitted) {{
+          scene.appendChild(el("line", {{x1,y1,x2,y2, stroke:"#94a3b8", "stroke-width":1.2, "stroke-dasharray":"4 3"}}));
+          continue;
+        }}
+        const parent = nodeById.get(n.parent);
         const onSelected = selectedPath.has(n.idx) && selectedPath.has(n.parent);
         const onBest = bestPath.has(n.idx) && bestPath.has(n.parent);
-        svg.appendChild(el("line", {{
+        scene.appendChild(el("line", {{
           x1,y1,x2,y2,
           stroke: onSelected ? (selected === DATA.best_idx ? "#16a34a" : "#f59e0b") : (onBest ? "#86efac" : "#cbd5e1"),
           "stroke-width": onSelected ? 3 : 1.2
         }}));
-        drawEdgeLabel(svg, edgeDecisionLabels(parent, n), x1, y1, x2, y2, onSelected, occupiedLabels);
+        if (onSelected || onBest || DATA.nodes.length <= 250) {{
+          drawEdgeLabel(scene, edgeDecisionLabels(parent, n), x1, y1, x2, y2, onSelected, occupiedLabels);
+        }}
       }}
-      for (const n of DATA.nodes) {{
+      for (const n of displayNodes) {{
         const [x,y] = pos.get(n.idx);
+        if (n.omitted) {{
+          const box = el("rect", {{x:x-37, y:y-15, width:74, height:30, rx:6, fill:"#f1f5f9", stroke:"#64748b", "stroke-width":1.2, "stroke-dasharray":"4 2"}});
+          box.addEventListener("pointerenter", () => updateTreeMagnifier(x, y, `Omitted: ${{n.path_count}} paths, ${{n.node_count}} nodes`));
+          scene.appendChild(box);
+          scene.appendChild(el("text", {{x, y:y-2, "text-anchor":"middle", "font-family":"Arial", "font-size":8, "font-weight":700, fill:"#475569"}}, `+${{n.path_count}} paths`));
+          scene.appendChild(el("text", {{x, y:y+9, "text-anchor":"middle", "font-family":"Arial", "font-size":7, fill:"#64748b"}}, `${{n.node_count}} nodes omitted`));
+          continue;
+        }}
         const onSelected = selectedPath.has(n.idx);
         const isBestPath = bestPath.has(n.idx);
         const fill = onSelected ? (selected === DATA.best_idx ? "#dcfce7" : "#fffbeb") : "#f8fafc";
         const stroke = onSelected ? (selected === DATA.best_idx ? "#16a34a" : "#f59e0b") : (isBestPath ? "#86efac" : "#cbd5e1");
-        svg.appendChild(el("circle", {{cx:x, cy:y, r:13, fill, stroke, "stroke-width":onSelected ? 2.5 : 1}}));
-        svg.appendChild(el("text", {{x, y:y-23, "text-anchor":"middle", "font-family":"Arial", "font-size":7}}, `J=${{n.g.toFixed(2)}}`));
-        svg.appendChild(el("text", {{x, y:y-14, "text-anchor":"middle", "font-family":"Arial", "font-size":7}}, `tw=${{n.tw.toFixed(2)}}`));
-        svg.appendChild(el("text", {{x, y:y+3, "text-anchor":"middle", "font-family":"Arial", "font-size":9, "font-weight":700}}, `${{n.idx}}${{n.idx===DATA.best_idx ? "*" : ""}}`));
+        const circle = el("circle", {{cx:x, cy:y, r:13, fill, stroke, "stroke-width":onSelected ? 2.5 : 1}});
+        circle.addEventListener("pointerenter", () => updateTreeMagnifier(x, y, `Node ${{n.idx}}${{n.idx===DATA.best_idx ? " * optimal" : ""}} | J=${{n.g.toFixed(3)}} | tw=${{n.tw.toFixed(3)}}`));
+        scene.appendChild(circle);
+        if (onSelected || isBestPath || DATA.nodes.length <= 250) {{
+          scene.appendChild(el("text", {{x, y:y-23, "text-anchor":"middle", "font-family":"Arial", "font-size":7}}, `J=${{n.g.toFixed(2)}}`));
+          scene.appendChild(el("text", {{x, y:y-14, "text-anchor":"middle", "font-family":"Arial", "font-size":7}}, `tw=${{n.tw.toFixed(2)}}`));
+        }}
+        scene.appendChild(el("text", {{x, y:y+3, "text-anchor":"middle", "font-family":"Arial", "font-size":9, "font-weight":700}}, `${{n.idx}}${{n.idx===DATA.best_idx ? "*" : ""}}`));
       }}
+      const omittedPaths = Math.max(0, DATA.terminal_count_total - DATA.terminal_count_shown);
+      const omittedNodes = Math.max(0, DATA.node_count_total - DATA.node_count_shown);
+      const summary = document.getElementById("treeSummary");
+      summary.textContent = omittedPaths || omittedNodes
+        ? `Visualization capped: displayed ${{DATA.terminal_count_shown}}/${{DATA.terminal_count_total}} terminal paths and ${{DATA.node_count_shown}}/${{DATA.node_count_total}} nodes; omitted ${{omittedPaths}} paths and ${{omittedNodes}} nodes. Full search result retained.`
+        : `Full tree displayed: ${{DATA.terminal_count_total}} terminal paths and ${{DATA.node_count_total}} nodes.`;
+      summary.style.display = "block";
     }}
 
     function selectedOptionIndex(pathTree) {{
@@ -2232,7 +2476,7 @@ def write_interactive_solution_html(
     }}
 
     function buildTrie(pathTree) {{
-      const root = {{id:0, label:`P${{pathTree.entrance}}`, depth:0, children:new Map(), terminal:false, parent:null}};
+      const root = {{id:0, label:`B${{pathTree.entrance}}`, depth:0, children:new Map(), terminal:false, parent:null}};
       let nextId = 1;
       for (const option of pathTree.options) {{
         let cur = root;
@@ -2467,7 +2711,7 @@ def write_interactive_solution_html(
       const selectedOption = pathTree.options[optionIndex] || pathTree.options[0];
       const selectedLabels = selectedOption ? optionLabels(pathTree, selectedOption) : [];
       const selected = new Set();
-      let previous = `P${{pathTree.entrance}}`;
+      let previous = `B${{pathTree.entrance}}`;
       for (const label of selectedLabels) {{
         selected.add(`${{previous}}->${{label}}`);
         previous = label;
@@ -2540,7 +2784,7 @@ def write_interactive_solution_html(
 
       for (const node of flat.nodes) {{
         const [x, y] = pos.get(node.id);
-        const selectedNode = node.label === `P${{pathTree.entrance}}` || selectedLabels.includes(node.label);
+        const selectedNode = node.label === `B${{pathTree.entrance}}` || selectedLabels.includes(node.label);
         const fill = selectedNode ? "#dcfce7" : "#f8fafc";
         const stroke = node.children.size > 1 ? "#2563eb" : "#64748b";
         svg.appendChild(el("circle", {{cx:x, cy:y, r:7.5, fill, stroke, "stroke-width":1.2}}));
@@ -2549,8 +2793,28 @@ def write_interactive_solution_html(
       return svg;
     }}
 
-    function renderBasicMap() {{
-      const panel = document.getElementById("basicMapPanel");
+    function roundedTrafficPath(points, radius=12) {{
+      if (!points.length) return "";
+      if (points.length === 1) return `M ${{points[0][0]}} ${{points[0][1]}}`;
+      let path = `M ${{points[0][0]}} ${{points[0][1]}}`;
+      for (let i = 1; i < points.length - 1; i += 1) {{
+        const previous = points[i - 1], current = points[i], next = points[i + 1];
+        const inDx = current[0] - previous[0], inDy = current[1] - previous[1];
+        const outDx = next[0] - current[0], outDy = next[1] - current[1];
+        const inLength = Math.max(1e-9, Math.hypot(inDx, inDy));
+        const outLength = Math.max(1e-9, Math.hypot(outDx, outDy));
+        const inRadius = Math.min(radius, inLength * 0.35);
+        const outRadius = Math.min(radius, outLength * 0.35);
+        const before = [current[0] - inDx / inLength * inRadius, current[1] - inDy / inLength * inRadius];
+        const after = [current[0] + outDx / outLength * outRadius, current[1] + outDy / outLength * outRadius];
+        path += ` L ${{before[0]}} ${{before[1]}} Q ${{current[0]}} ${{current[1]}} ${{after[0]}} ${{after[1]}}`;
+      }}
+      const last = points[points.length - 1];
+      return path + ` L ${{last[0]}} ${{last[1]}}`;
+    }}
+
+    function renderBasicMap(panelId="basicMapPanel", routeMode="shortest") {{
+      const panel = document.getElementById(panelId);
       panel.innerHTML = "";
       const coordEntries = Object.entries(DATA.coords || {{}});
       if (!coordEntries.length) {{
@@ -2565,88 +2829,149 @@ def write_interactive_solution_html(
       const ys = coordEntries.map(([, xy]) => xy[1]);
       const minX = Math.min(...xs), maxX = Math.max(...xs);
       const minY = Math.min(...ys), maxY = Math.max(...ys);
-      const scale = 48;
-      const margin = 30;
-      const width = (maxX - minX) * scale + margin * 2;
-      const height = (maxY - minY) * scale + margin * 2;
+      const scale = 78;
+      const margin = 68;
+      const roadWidth = 38;
+      const intersectionSize = 40;
+      const portReach = 52;
+      const legendRows = Math.max(1, (DATA.path_trees || []).length);
+      const legendHeight = 18 + legendRows * 14;
+      const mapWidth = (maxX - minX) * scale + margin * 2;
+      const mapHeight = (maxY - minY) * scale + margin * 2;
+      const width = mapWidth;
+      const height = mapHeight + legendHeight;
       const point = (x, y) => [margin + (x - minX) * scale, margin + (maxY - y) * scale];
-      const delta = {{L:[-1,0], D:[0,-1], R:[1,0], U:[0,1]}};
-      const entrancePorts = new Set((DATA.plans || []).map(plan => Number(plan.entrance)));
-      const exitPorts = new Set((DATA.plans || []).map(plan => Number(plan.exit)));
-      const displayW = Math.max(220, Math.min(420, width * 2.8));
-      const displayH = Math.max(110, Math.min(300, displayW * height / Math.max(1, width)));
+      const screenDelta = {{L:[-1,0], D:[0,1], R:[1,0], U:[0,-1]}};
+      const portsById = new Map((DATA.ports || []).map(port => [Number(port.id), port]));
+      const portGeometry = port => {{
+        const xy = DATA.coords[String(port.intersection)];
+        const direction = screenDelta[port.direction] || [0, 0];
+        if (!xy) return null;
+        const center = point(xy[0], xy[1]);
+        return {{
+          center,
+          direction,
+          end:[center[0] + direction[0] * portReach, center[1] + direction[1] * portReach]
+        }};
+      }};
+      const displayW = Math.max(440, Math.min(780, width * 2.05));
+      const displayH = Math.max(300, Math.min(650, displayW * height / Math.max(1, width)));
       const svg = el("svg", {{viewBox:`0 0 ${{width}} ${{height}}`, width:displayW, height:displayH}});
       svg.appendChild(el("rect", {{x:0, y:0, width, height, fill:"#ffffff"}}));
 
+      const defs = el("defs");
+      const marker = (id, color, size=5) => {{
+        const item = el("marker", {{id, viewBox:"0 0 10 10", refX:8.5, refY:5, markerWidth:size, markerHeight:size, orient:"auto-start-reverse"}});
+        item.appendChild(el("path", {{d:"M 0 0 L 10 5 L 0 10 z", fill:color}}));
+        defs.appendChild(item);
+      }};
+      marker("trafficIncoming", "#2e7d32", 4.5);
+      marker("trafficOutgoing", "#9a4d2e", 4.5);
+      const routeColors = ["#0ea5e9", "#22c55e", "#d946ef", "#f97316", "#8b5cf6", "#ef4444", "#14b8a6", "#ca8a04"];
+      routeColors.forEach((color, index) => marker(`robotRouteArrow${{index}}`, color, 5.5));
+      svg.appendChild(defs);
+
+      const drawRoad = (start, end) => {{
+        svg.appendChild(el("line", {{x1:start[0], y1:start[1], x2:end[0], y2:end[1], stroke:"#b8bdc5", "stroke-width":roadWidth, "stroke-linecap":"butt"}}));
+        svg.appendChild(el("line", {{x1:start[0], y1:start[1], x2:end[0], y2:end[1], stroke:"#eab308", "stroke-width":1.2, "stroke-dasharray":"7 6"}}));
+      }};
+
       for (const road of DATA.roads || []) {{
-        const a = DATA.coords[String(road.a)];
-        const b = DATA.coords[String(road.b)];
+        const a = DATA.coords[String(road.a)], b = DATA.coords[String(road.b)];
         if (!a || !b) continue;
-        const [x1, y1] = point(a[0], a[1]);
-        const [x2, y2] = point(b[0], b[1]);
-        svg.appendChild(el("line", {{
-          x1, y1, x2, y2,
-          stroke:"#94a3b8",
-          "stroke-width":4,
-          "stroke-linecap":"round"
-        }}));
+        drawRoad(point(a[0], a[1]), point(b[0], b[1]));
+      }}
+      for (const port of DATA.ports || []) {{
+        const geometry = portGeometry(port);
+        if (geometry) drawRoad(geometry.center, geometry.end);
       }}
 
       for (const item of coordEntries) {{
-        const id = Number(item[0]);
         const [gx, gy] = item[1];
         const [x, y] = point(gx, gy);
-        svg.appendChild(el("circle", {{cx:x, cy:y, r:9, fill:"#2563eb", stroke:"#1e3a8a", "stroke-width":1.8}}));
-        svg.appendChild(el("text", {{
-          x, y:y+1,
-          "text-anchor":"middle",
-          "dominant-baseline":"middle",
-          "font-family":"Arial",
-          "font-size":7,
-          "font-weight":700,
-          fill:"#ffffff"
-        }}, `I${{id}}`));
+        svg.appendChild(el("rect", {{
+          x:x-intersectionSize/2, y:y-intersectionSize/2,
+          width:intersectionSize, height:intersectionSize,
+          fill:"#b8bdc5", stroke:"#1e40af", "stroke-width":1.5, "stroke-dasharray":"5 3"
+        }}));
       }}
 
       for (const port of DATA.ports || []) {{
-        const xy = DATA.coords[String(port.intersection)];
-        const d = delta[port.direction] || [0, 0];
-        if (!xy) continue;
-        const [px, py] = point(xy[0] + d[0] * 0.50, xy[1] + d[1] * 0.50);
-        const isEntrance = entrancePorts.has(Number(port.id));
-        const isExit = exitPorts.has(Number(port.id));
-        const fill = isEntrance && isExit ? "#ede9fe" : (isEntrance ? "#dcfce7" : (isExit ? "#ffedd5" : "#fef3c7"));
-        const stroke = isEntrance && isExit ? "#7c3aed" : (isEntrance ? "#16a34a" : (isExit ? "#f97316" : "#b77900"));
-        svg.appendChild(el("rect", {{
-          x:px-12, y:py-9,
-          width:24,
-          height:18,
-          rx:3,
-          fill,
-          stroke,
-          "stroke-width":1.5
-        }}));
-        svg.appendChild(el("text", {{
-          x:px, y:py+1,
-          "text-anchor":"middle",
-          "dominant-baseline":"middle",
-          "font-family":"Arial",
-          "font-size":7,
-          "font-weight":700
-        }}, `P${{port.id}}`));
-        if (isEntrance || isExit) {{
-          const tag = isEntrance && isExit ? "Ent/Ext" : (isEntrance ? "Ent" : "Ext");
-          svg.appendChild(el("text", {{
-            x:px,
-            y:py+16,
-            "text-anchor":"middle",
-            "font-family":"Arial",
-            "font-size":5.8,
-            "font-weight":700,
-            fill:stroke
-          }}, tag));
-        }}
+        const geometry = portGeometry(port);
+        if (!geometry) continue;
+        const [dx, dy] = geometry.direction;
+        const perpendicular = [-dy, dx];
+        const incomingStart = [geometry.center[0] + dx*45 + perpendicular[0]*7, geometry.center[1] + dy*45 + perpendicular[1]*7];
+        const incomingEnd = [geometry.center[0] + dx*25 + perpendicular[0]*7, geometry.center[1] + dy*25 + perpendicular[1]*7];
+        const outgoingStart = [geometry.center[0] + dx*25 - perpendicular[0]*7, geometry.center[1] + dy*25 - perpendicular[1]*7];
+        const outgoingEnd = [geometry.center[0] + dx*45 - perpendicular[0]*7, geometry.center[1] + dy*45 - perpendicular[1]*7];
+        svg.appendChild(el("line", {{x1:incomingStart[0], y1:incomingStart[1], x2:incomingEnd[0], y2:incomingEnd[1], stroke:"#2e7d32", "stroke-width":1.8, "marker-end":"url(#trafficIncoming)"}}));
+        svg.appendChild(el("line", {{x1:outgoingStart[0], y1:outgoingStart[1], x2:outgoingEnd[0], y2:outgoingEnd[1], stroke:"#9a4d2e", "stroke-width":1.8, "marker-end":"url(#trafficOutgoing)"}}));
       }}
+
+      const routeItems = (DATA.path_trees || []).map((pathTree, index) => {{
+        const optionIndex = routeMode === "selected"
+          ? selectedOptionIndex(pathTree)
+          : (Number.isInteger(pathTree.shortest_index) ? pathTree.shortest_index : 0);
+        return {{pathTree, option:pathTree.options[optionIndex] || pathTree.options[0], index}};
+      }}).filter(item => item.option);
+      const dashPatterns = ["", "9 5", "3 4", "12 4 3 4", "2 3", "14 5"];
+      routeItems.forEach((item, routeIndex) => {{
+        const entrance = portsById.get(Number(item.pathTree.entrance));
+        const exitPort = portsById.get(Number(item.pathTree.exit));
+        const entranceGeometry = entrance ? portGeometry(entrance) : null;
+        const exitGeometry = exitPort ? portGeometry(exitPort) : null;
+        if (!entranceGeometry || !exitGeometry) return;
+        const routePoints = [
+          entranceGeometry.end,
+          ...item.option.intersections.map(id => {{
+            const xy = DATA.coords[String(id)];
+            return point(xy[0], xy[1]);
+          }}),
+          exitGeometry.end
+        ];
+        const color = routeColors[routeIndex % routeColors.length];
+        const pathData = roundedTrafficPath(routePoints, 13);
+        svg.appendChild(el("path", {{d:pathData, fill:"none", stroke:"#ffffff", "stroke-width":6.5, "stroke-linejoin":"round", "stroke-linecap":"round", opacity:0.82}}));
+        svg.appendChild(el("path", {{
+          d:pathData, fill:"none", stroke:color, "stroke-width":3.2,
+          "stroke-linejoin":"round", "stroke-linecap":"round",
+          "stroke-dasharray":dashPatterns[routeIndex % dashPatterns.length],
+          "marker-end":`url(#robotRouteArrow${{routeIndex % routeColors.length}})`
+        }}));
+        const [labelX, labelY] = entranceGeometry.end;
+        svg.appendChild(el("rect", {{x:labelX-9, y:labelY-8, width:18, height:12, rx:3, fill:"#ffffff", stroke:color, "stroke-width":1.4}}));
+        svg.appendChild(el("text", {{x:labelX, y:labelY+0.5, "text-anchor":"middle", "font-family":"Arial", "font-size":6.5, "font-weight":700, fill:color}}, `N${{item.pathTree.vehicle_id}}`));
+      }});
+
+      for (const item of coordEntries) {{
+        const id = Number(item[0]);
+        const [x, y] = point(item[1][0], item[1][1]);
+        svg.appendChild(el("text", {{x, y:y+4, "text-anchor":"middle", "font-family":"Arial", "font-size":12, "font-weight":700, fill:"#1f2937", stroke:"#b8bdc5", "stroke-width":3, "paint-order":"stroke fill"}}, `I${{id}}`));
+      }}
+      for (const port of DATA.ports || []) {{
+        const geometry = portGeometry(port);
+        if (!geometry) continue;
+        const [dx, dy] = geometry.direction;
+        const labelX = geometry.end[0] + dx * 11;
+        const labelY = geometry.end[1] + dy * 11;
+        svg.appendChild(el("text", {{
+          x:labelX, y:labelY+3, "text-anchor":"middle",
+          "font-family":"Arial", "font-size":9, "font-weight":700, fill:"#111827",
+          stroke:"#ffffff", "stroke-width":3, "paint-order":"stroke fill"
+        }}, `B${{port.id}}`));
+      }}
+
+      const legendY = mapHeight + 9;
+      const legendLabel = routeMode === "selected" ? "Current selected paths" : "Robot shortest paths (reference)";
+      svg.appendChild(el("text", {{x:8, y:legendY, "font-family":"Arial", "font-size":7.5, "font-weight":700, fill:"#475569"}}, legendLabel));
+      routeItems.forEach((item, index) => {{
+        const y = legendY + 12 + index * 14;
+        const color = routeColors[index % routeColors.length];
+        svg.appendChild(el("line", {{x1:10, y1:y-2, x2:34, y2:y-2, stroke:color, "stroke-width":3, "stroke-dasharray":dashPatterns[index % dashPatterns.length]}}));
+        const routeText = `N${{item.pathTree.vehicle_id}}: B${{item.pathTree.entrance}} → ${{item.option.intersections.map(id => `I${{id}}`).join(" → ")}} → B${{item.pathTree.exit}}`;
+        svg.appendChild(el("text", {{x:39, y, "font-family":"Arial", "font-size":7.5, "font-weight":700, fill:"#334155"}}, routeText));
+      }});
       panel.appendChild(svg);
     }}
 
@@ -2654,8 +2979,7 @@ def write_interactive_solution_html(
       if (!option) return "";
       const free = Number(option.free_time || 0);
       const extra = Number(option.extra_time || 0);
-      const lambda = Number(DATA.lambda_path || 1);
-      return `free=${{free.toFixed(3)}}s, extra=${{extra.toFixed(3)}}s, obj=${{(lambda * extra).toFixed(3)}}`;
+      return `free=${{free.toFixed(3)}}s, extra=${{extra.toFixed(3)}}s, obj=${{extra.toFixed(3)}}`;
     }}
 
     function pathText(option, includeCost=false) {{
@@ -2689,8 +3013,8 @@ def write_interactive_solution_html(
         }}).join("");
         tr.innerHTML = `
           <td>N${{pathTree.vehicle_id}}</td>
-          <td>P${{pathTree.entrance}}</td>
-          <td>P${{pathTree.exit}}</td>
+          <td>B${{pathTree.entrance}}</td>
+          <td>B${{pathTree.exit}}</td>
           <td>${{selected ? pathText(selected, true) : ""}}</td>
           <td><div class="path-list">${{candidateList}}</div></td>
         `;
@@ -2753,8 +3077,8 @@ def write_interactive_solution_html(
           const tr = document.createElement("tr");
           tr.innerHTML = `
             <td>N${{pathTree.vehicle_id}}</td>
-            <td>P${{pathTree.entrance}}</td>
-            <td>P${{pathTree.exit}}</td>
+            <td>B${{pathTree.entrance}}</td>
+            <td>B${{pathTree.exit}}</td>
             <td>[${{item.prefix.join(",")}}]</td>
             <td><div class="path-list">${{choiceText}}</div></td>
           `;
@@ -2811,6 +3135,52 @@ def write_interactive_solution_html(
       return "";
     }}
 
+    function movementRouteId(planIndex, taskIndex, node) {{
+      const plan = DATA.plans[planIndex];
+      if (!plan) return null;
+      const offset = Math.max(0, taskIndex - 1);
+      if (plan.route_ids && plan.route_ids.length) return plan.route_ids[offset] ?? null;
+      if (plan.route_ids_by_option && node.route_candidates && node.route_candidates[planIndex]) {{
+        const candidates = node.route_candidates[planIndex];
+        const optionIndex = candidates.length ? candidates[0] : 0;
+        const routeIds = plan.route_ids_by_option[optionIndex] || [];
+        return routeIds[offset] ?? null;
+      }}
+      return null;
+    }}
+
+    const conflictingRoutePairKeys = new Set(
+      (DATA.conflicting_route_pairs || []).map(pair => `${{pair[0]}}|${{pair[1]}}`)
+    );
+
+    function routePairConflicts(left, right) {{
+      const a = Math.min(left, right);
+      const b = Math.max(left, right);
+      return conflictingRoutePairKeys.has(`${{a}}|${{b}}`);
+    }}
+
+    function conflictingSegmentPairs(segs, node) {{
+      const visits = segs.map(seg => {{
+        const planIndex = DATA.plans.findIndex(p => p.vehicle_id === seg.vehicle_id);
+        return {{...seg, route_id:movementRouteId(planIndex, seg.task_index, node)}};
+      }});
+      const pairs = [];
+      for (let i = 0; i < visits.length; i += 1) {{
+        for (let j = i + 1; j < visits.length; j += 1) {{
+          const left = visits[i], right = visits[j];
+          if (!Number.isInteger(left.route_id) || !Number.isInteger(right.route_id)) continue;
+          if (!routePairConflicts(left.route_id, right.route_id)) continue;
+          pairs.push({{left, right}});
+        }}
+      }}
+      pairs.sort((a, b) =>
+        Math.min(a.left.route_id, a.right.route_id) - Math.min(b.left.route_id, b.right.route_id) ||
+        Math.max(a.left.route_id, a.right.route_id) - Math.max(b.left.route_id, b.right.route_id) ||
+        a.left.vehicle_id - b.left.vehicle_id || a.right.vehicle_id - b.right.vehicle_id
+      );
+      return pairs;
+    }}
+
     function turnCode(turn) {{
       const key = String(turn || "").toLowerCase();
       if (key === "left") return "1";
@@ -2859,12 +3229,15 @@ def write_interactive_solution_html(
     }}
 
     function localScheduleSvg(resource, segs, attempts, node, globalMaxT) {{
-      const width = 520;
+      const pairMode = Boolean(DATA.trajectory_conflict_filter);
+      const conflictPairs = pairMode ? conflictingSegmentPairs(segs, node) : [];
+      const width = pairMode ? 640 : 520;
       const rowH = 26;
       const rows = [...new Set([...segs.map(s => s.vehicle_id), ...attempts.map(a => a.vehicle_id)])].sort((a,b)=>a-b);
-      const height = 74 + Math.max(1, rows.length + 1) * rowH;
+      const validationRowCount = pairMode ? Math.max(1, conflictPairs.length) : 1;
+      const height = 74 + Math.max(1, rows.length + validationRowCount) * rowH;
       const maxT = Math.max(1, globalMaxT || 1);
-      const x0 = 58, x1 = width - 14;
+      const x0 = pairMode ? 126 : 58, x1 = width - 14;
       const xOf = t => x0 + t / maxT * (x1 - x0);
       const svg = el("svg", {{viewBox:`0 0 ${{width}} ${{height}}`, width:"100%"}});
       rows.forEach((vehicleId, row) => {{
@@ -2873,8 +3246,10 @@ def write_interactive_solution_html(
         svg.appendChild(el("rect", {{x:x0, y:y, width:x1-x0, height:18, fill:"#f8fafc", stroke:"#dbe3ef"}}));
       }});
       const resourceY = 20 + rows.length * rowH;
-      svg.appendChild(el("text", {{x:12, y:resourceY+15, "font-family":"Arial", "font-size":9, "font-weight":700}}, `I${{resource}}`));
-      svg.appendChild(el("rect", {{x:x0, y:resourceY, width:x1-x0, height:18, fill:"#f8fafc", stroke:"#dbe3ef"}}));
+      if (!pairMode) {{
+        svg.appendChild(el("text", {{x:12, y:resourceY+15, "font-family":"Arial", "font-size":9, "font-weight":700}}, `I${{resource}}`));
+        svg.appendChild(el("rect", {{x:x0, y:resourceY, width:x1-x0, height:18, fill:"#f8fafc", stroke:"#dbe3ef"}}));
+      }}
       segs.forEach(s => {{
         const row = rows.indexOf(s.vehicle_id);
         const y = 20 + row * rowH;
@@ -2887,8 +3262,35 @@ def write_interactive_solution_html(
         svg.appendChild(el("rect", {{x:xs, y:y, width:Math.max(2, xe-xs), height:18, fill:"#4ade80"}}));
         const turn = turnLabel(DATA.plans.findIndex(p => p.vehicle_id === s.vehicle_id), s.task_index, node);
         svg.appendChild(el("text", {{x:(xs+xe)/2, y:y+12, "text-anchor":"middle", "font-family":"Arial", "font-size":8, "font-weight":700}}, `C${{turnCode(turn)}}, K${{s.task_index}}`));
-        svg.appendChild(el("rect", {{x:xs, y:resourceY, width:Math.max(2, xe-xs), height:18, fill:"none", stroke:"#22c55e", "stroke-width":1.5}}));
-        svg.appendChild(el("text", {{x:(xs+xe)/2, y:resourceY+12, "text-anchor":"middle", "font-family":"Arial", "font-size":8, "font-weight":700}}, `N${{s.vehicle_id}}`));
+        if (!pairMode) {{
+          svg.appendChild(el("rect", {{x:xs, y:resourceY, width:Math.max(2, xe-xs), height:18, fill:"none", stroke:"#22c55e", "stroke-width":1.5}}));
+          svg.appendChild(el("text", {{x:(xs+xe)/2, y:resourceY+12, "text-anchor":"middle", "font-family":"Arial", "font-size":8, "font-weight":700}}, `N${{s.vehicle_id}}`));
+        }}
+      }});
+      if (pairMode && !conflictPairs.length) {{
+        svg.appendChild(el("text", {{x:12, y:resourceY+15, "font-family":"Arial", "font-size":8, "font-weight":700, fill:"#15803d"}}, `I${{resource}}: no active conflict pair`));
+        svg.appendChild(el("rect", {{x:x0, y:resourceY, width:x1-x0, height:18, fill:"#f0fdf4", stroke:"#86efac"}}));
+      }}
+      conflictPairs.forEach((pair, pairIndex) => {{
+        const y = resourceY + pairIndex * rowH;
+        const left = pair.left, right = pair.right;
+        const routeA = Math.min(left.route_id, right.route_id);
+        const routeB = Math.max(left.route_id, right.route_id);
+        const overlapStart = Math.max(left.start_time, right.start_time);
+        const overlapEnd = Math.min(left.end_time, right.end_time);
+        const violated = overlapEnd > overlapStart + 1e-9;
+        const label = `I${{resource}}, R${{routeA}}–R${{routeB}} ${{violated ? "✗" : "✓"}}`;
+        svg.appendChild(el("text", {{x:12, y:y+15, "font-family":"Arial", "font-size":8, "font-weight":700, fill:violated ? "#b91c1c" : "#15803d"}}, label));
+        svg.appendChild(el("rect", {{x:x0, y, width:x1-x0, height:18, fill:violated ? "#fef2f2" : "#f0fdf4", stroke:violated ? "#fca5a5" : "#86efac"}}));
+        [left, right].forEach((visit, visitIndex) => {{
+          const xs = xOf(visit.start_time), xe = xOf(visit.end_time);
+          const barY = y + 1 + visitIndex * 8;
+          svg.appendChild(el("rect", {{x:xs, y:barY, width:Math.max(2, xe-xs), height:7, fill:"#4ade80", stroke:"#22c55e", "stroke-width":0.8}}));
+          svg.appendChild(el("text", {{x:(xs+xe)/2, y:barY+6, "text-anchor":"middle", "font-family":"Arial", "font-size":5.5, "font-weight":700}}, `N${{visit.vehicle_id}},K${{visit.task_index}},R${{visit.route_id}}`));
+        }});
+        if (violated) {{
+          svg.appendChild(el("rect", {{x:xOf(overlapStart), y, width:Math.max(2, xOf(overlapEnd)-xOf(overlapStart)), height:18, fill:"rgba(239,68,68,0.45)", stroke:"#dc2626", "stroke-width":1.2}}));
+        }}
       }});
       attempts.forEach(a => {{
         const row = rows.indexOf(a.vehicle_id);
@@ -2951,7 +3353,10 @@ def write_interactive_solution_html(
       const node = nodeById.get(selected);
       const isBest = selected === DATA.best_idx;
       document.getElementById("meta").textContent = `Path ${{cursor+1}}/${{terminals.length}}: node ${{selected}}${{isBest ? " * optimal" : ""}} | J = ${{node.g.toFixed(3)}} | shown paths ${{DATA.terminal_count_shown}}/${{DATA.terminal_count_total}}, nodes ${{DATA.node_count_shown}}/${{DATA.node_count_total}}`;
-      document.getElementById("scheduleTitle").textContent = `Schedule for node ${{selected}}${{isBest ? " *" : ""}}`;
+      const validationMode = DATA.trajectory_conflict_filter
+        ? "trajectory-pair contention validation"
+        : "conservative intersection-occupancy validation";
+      document.getElementById("scheduleTitle").textContent = `Schedule for node ${{selected}}${{isBest ? " *" : ""}} — ${{validationMode}}`;
       const panel = document.getElementById("schedulePanel");
       panel.innerHTML = "";
       const globalMaxT = Math.max(
@@ -2960,25 +3365,21 @@ def write_interactive_solution_html(
         ...(node.attempts || []).flatMap(a => [a.start_time, a.end_time])
       );
       for (const resource of orderedResources()) {{
+        const segs = node.segments.filter(s => s.resource === resource);
+        const attempts = (node.attempts || []).filter(a => a.resource === resource);
+        if (!segs.length && !attempts.length) continue;
         const card = document.createElement("section");
         card.className = "icard";
         card.innerHTML = `<h3>I${{resource}}</h3>`;
-        const segs = node.segments.filter(s => s.resource === resource);
-        const attempts = (node.attempts || []).filter(a => a.resource === resource);
-        if (segs.length || attempts.length) card.appendChild(localScheduleSvg(resource, segs, attempts, node, globalMaxT));
-        else {{
-          const empty = document.createElement("div");
-          empty.className = "empty";
-          empty.textContent = "No scheduled local task";
-          card.appendChild(empty);
-        }}
+        card.appendChild(localScheduleSvg(resource, segs, attempts, node, globalMaxT));
         panel.appendChild(card);
       }}
     }}
 
     function renderAll() {{
       renderTree();
-      renderBasicMap();
+      renderBasicMap("basicMapPanel", "shortest");
+      renderBasicMap("selectedPathMapPanel", "selected");
       renderPathSummary();
       renderPathBranches();
       renderPathTrees();
@@ -2995,27 +3396,67 @@ def write_interactive_solution_html(
 
     const treeSvg = document.getElementById("treeSvg");
     treeSvg.addEventListener("wheel", event => {{
+      if (!event.ctrlKey) return;
       event.preventDefault();
-      if (!treeViewBox || !treeBaseViewBox) return;
-      const pointer = treeSvgPoint(event);
-      const zoom = event.deltaY < 0 ? 0.85 : 1.18;
-      const minW = treeBaseViewBox[2] * 0.08;
-      const maxW = treeBaseViewBox[2] * 6;
-      const nextW = Math.min(maxW, Math.max(minW, treeViewBox[2] * zoom));
-      const factor = nextW / treeViewBox[2];
-      const nextH = treeViewBox[3] * factor;
-      treeViewBox = [
-        pointer.x - (pointer.x - treeViewBox[0]) * factor,
-        pointer.y - (pointer.y - treeViewBox[1]) * factor,
-        nextW,
-        nextH
-      ];
-      applyTreeViewBox();
+      zoomTreeAtCenter(event.deltaY < 0 ? 0.85 : 1.18);
     }}, {{passive:false}});
 
     treeSvg.addEventListener("dblclick", event => {{
       event.preventDefault();
       resetTreeZoom();
+    }});
+    treeSvg.addEventListener("pointerdown", event => {{
+      if (event.button !== 0 || !treeBaseViewBox || !treeViewBox) return;
+      if (treeViewBox[2] >= treeBaseViewBox[2] * 0.995) return;
+      treeSvg.setPointerCapture(event.pointerId);
+      treeDrag = {{
+        pointerId:event.pointerId,
+        clientX:event.clientX,
+        clientY:event.clientY,
+        box:treeViewBox.slice(),
+        rect:treeSvg.getBoundingClientRect()
+      }};
+      treeSvg.classList.add("dragging");
+    }});
+    treeSvg.addEventListener("pointermove", event => {{
+      if (!treeDrag || event.pointerId !== treeDrag.pointerId) return;
+      const scaleX = treeDrag.box[2] / Math.max(1, treeDrag.rect.width);
+      const scaleY = treeDrag.box[3] / Math.max(1, treeDrag.rect.height);
+      const rawX = treeDrag.box[0] - (event.clientX - treeDrag.clientX) * scaleX;
+      const rawY = treeDrag.box[1] - (event.clientY - treeDrag.clientY) * scaleY;
+      const xPad = treeDrag.box[2] * 0.25, yPad = treeDrag.box[3] * 0.25;
+      const minX = treeBaseViewBox[0] - xPad;
+      const maxX = treeBaseViewBox[0] + treeBaseViewBox[2] - treeDrag.box[2] + xPad;
+      const minY = treeBaseViewBox[1] - yPad;
+      const maxY = treeBaseViewBox[1] + treeBaseViewBox[3] - treeDrag.box[3] + yPad;
+      treeViewBox = [
+        Math.min(maxX, Math.max(minX, rawX)),
+        Math.min(maxY, Math.max(minY, rawY)),
+        treeDrag.box[2],
+        treeDrag.box[3]
+      ];
+      applyTreeViewBox();
+    }});
+    function finishTreeDrag(event) {{
+      if (!treeDrag || (event && event.pointerId !== treeDrag.pointerId)) return;
+      try {{ treeSvg.releasePointerCapture(treeDrag.pointerId); }} catch (_) {{}}
+      treeDrag = null;
+      treeSvg.classList.remove("dragging");
+    }}
+    treeSvg.addEventListener("pointerup", finishTreeDrag);
+    treeSvg.addEventListener("pointercancel", finishTreeDrag);
+    treeSvg.addEventListener("pointerleave", () => {{
+      if (!treeDrag) document.getElementById("treeMagnifier").classList.remove("visible");
+    }});
+
+    document.getElementById("treeZoomOut").addEventListener("click", () => zoomTreeAtCenter(1.25));
+    document.getElementById("treeZoomIn").addEventListener("click", () => zoomTreeAtCenter(0.8));
+    document.getElementById("treeFitAll").addEventListener("click", resetTreeZoom);
+    document.getElementById("treeFitPath").addEventListener("click", fitSelectedTreePath);
+    document.getElementById("treeMagnifierToggle").addEventListener("click", event => {{
+      treeMagnifierEnabled = !treeMagnifierEnabled;
+      event.currentTarget.classList.toggle("active", treeMagnifierEnabled);
+      if (!treeMagnifierEnabled) document.getElementById("treeMagnifier").classList.remove("visible");
     }});
 
     const mainLayout = document.getElementById("mainLayout");

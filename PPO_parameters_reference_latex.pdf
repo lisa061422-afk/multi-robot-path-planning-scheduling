@@ -1,0 +1,280 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /Name /F1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Font << /F1 1 0 R >> /ProcSet [/PDF /Text] >>
+endobj
+3 0 obj
+<< /Length 2952 >>
+stream
+BT
+/F1 9 Tf
+0 g
+1 0 0 1 48 747.00 Tm
+(PPO Parameters Reference \(Current Implementation\)) Tj
+0 -14 Td
+(Generated on 2026-07-23.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(1\) Objective) Tj
+0 -14 Td
+($g = g_{        ext{delay}} + g_{       ext{path}}$) Tj
+0 -14 Td
+(This is the co-design accumulated cost used by PPO transitions.) Tj
+0 -14 Td
+(Source: coarse_scheduler.py \(dynamic nodes\), evaluate.py \(final reporting\).) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(2\) What one Action means) Tj
+0 -14 Td
+(At each decision node, PPO chooses one index over current legal branches.) Tj
+0 -14 Td
+(One action corresponds to one branch and that branch carries the scheduling/path-decision) Tj
+0 -14 Td
+(effects.) Tj
+0 -14 Td
+(Code references: ppo_training/environment.py \(step/reset\), ppo_training/encoding.py) Tj
+0 -14 Td
+(\(encode_actions\).) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(3\) State / Action dimensions) Tj
+0 -14 Td
+($       ext{state\\_dim} = 1 + N_r \(d_s + 2\(R+1\) + 3R + 2P + M\)$) Tj
+0 -14 Td
+(where $N_r$=number of robots, $R=n_     ext{resources}$, $P=n_  ext{ports}$, $M=) Tj
+0 -14 Td
+(ext{max\\_route\\_options}$, $d_s=        ext{ROBOT\\_STATE\\_SCALARS}=10$.) Tj
+0 -14 Td
+($       ext{action\\_dim} = N_r \(\(R+1\) + 2\(R+1\) + d_a\)$) Tj
+0 -14 Td
+(where $d_a=     ext{ROBOT\\_ACTION\\_SCALARS}=4$.) Tj
+0 -14 Td
+(Default EncodingConfig: $R=9, P=12$.) Tj
+0 -14 Td
+(Source: ppo_training/encoding.py lines 47-67, 130-181.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(4\) Reward definition) Tj
+0 -14 Td
+(At one environment step: $r_t = -\(g_{t+1}-g_t\) = -\(\\Delta g_t\)$.) Tj
+0 -14 Td
+(Code: ppo_training/environment.py lines 79-107.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(5\) PPOConfig defaults in trainer.py) Tj
+0 -14 Td
+($\\gamma = 1.0$) Tj
+0 -14 Td
+($\\lambda = 0.95$) Tj
+0 -14 Td
+($\\epsilon = 0.2$) Tj
+0 -14 Td
+($c_1 =  ext{entropy\\_coef} = 0.01$) Tj
+0 -14 Td
+($c_2 =  ext{value\\_loss\\_coef} = 0.5$) Tj
+0 -14 Td
+($lpha =        ext{learning\\_rate} = 3e{-4}$) Tj
+0 -14 Td
+($       ext{update\\_epochs}=4,  ext{minibatch\\_size}=64,        ext{max\\_grad\\_norm}=0.5,) Tj
+0 -14 Td
+(ext{max\\_decisions\\_per\\_episode}=200$) Tj
+0 -14 Td
+($       ext{reward\\_norm\\_mode}=\\{none,absmax\\}, \\epsilon_{norm}=1e{-12}$.) Tj
+0 -14 Td
+(Source: ppo_training/trainer.py lines 25-39.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(6\) Command-line mapping in train.py) Tj
+0 -14 Td
+(---) Tj
+0 -14 Td
+($       ext{--learning-rate}    o$ PPOConfig.learning_rate.) Tj
+0 -14 Td
+($       ext{--update-epochs}    o$ PPOConfig.update_epochs.) Tj
+0 -14 Td
+($       ext{--minibatch-size}   o$ PPOConfig.minibatch_size.) Tj
+0 -14 Td
+($       ext{--entropy-coef}     o$ PPOConfig.entropy_coef.) Tj
+0 -14 Td
+($       ext{--max-decisions}    o$ PPOConfig.max_decisions_per_episode.) Tj
+0 -14 Td
+($       ext{--reward-norm-mode/--lr-schedule/--entropy-schedule}$ map to training behavior and) Tj
+0 -14 Td
+(schedules.) Tj
+0 -14 Td
+(Also controls: --skip-trivial-cases, --fix-shortest-paths, --bc-pretrain-episodes.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 9 0 R /MediaBox [0 0 595.0 792.0] /Resources 2 0 R /Contents 3 0 R >>
+endobj
+5 0 obj
+<< /Length 3032 >>
+stream
+BT
+/F1 9 Tf
+0 g
+1 0 0 1 48 747.00 Tm
+(Source: ppo_training/train.py 25-135, 337-375, 500-540.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(7\) GAE and targets) Tj
+0 -14 Td
+(Temporal-difference: $\\delta_t = r_t + \\gamma V\(s_{t+1}\) - V\(s_t\)$.) Tj
+0 -14 Td
+(Generalized Advantage: $\\hat A_t = \\delta_t + \\gamma\\lambda\\hat A_{t+1}$.) Tj
+0 -14 Td
+(Value target: $V_t^{    ext{target}} = \\hat A_t + V\(s_t\)$.) Tj
+0 -14 Td
+(Normalization: $        ilde A_t = \(\\hat A_t - \\mu\(\\hat A\)\)/ \(\\sigma\(\\hat A\)+1e{-8}\)$.) Tj
+0 -14 Td
+(Source: ppo_training/rollout_buffer.py 47-63.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(8\) PPO update formulas) Tj
+0 -14 Td
+(Density ratio: $ ho_t = \\exp\(\\log \\pi_{  heta}\(a_t|s_t\)-\\log \\pi_{       heta_{old}}\(a_t|s_t\)\)$.) Tj
+0 -14 Td
+($L_t^{  ext{surrogate}} = \\min\(  ho_t \\hat A_t,  ext{clip}\( ho_t,1-\\epsilon,1+\\epsilon\)\\hat) Tj
+0 -14 Td
+(A_t\)$.) Tj
+0 -14 Td
+($L^{    ext{actor}} = -\\mathbb E[L_t^{  ext{surrogate}}]$.) Tj
+0 -14 Td
+($J^{    ext{actor}} = L^{       ext{actor}} - c_1\\,H\(\\pi\(\\cdot|s_t\)\)$.) Tj
+0 -14 Td
+($L^{    ext{critic}} = \\mathbb E[\(V_\\phi\(s_t\)-V_t^{     ext{target}}\)^2]$.) Tj
+0 -14 Td
+($J^{    ext{critic}} = c_2 L^{  ext{critic}}$.) Tj
+0 -14 Td
+(Also logged: $  ext{approx\\_kl}=\\mathbb E[\( ho_t-1\)-\\log ho_t],\\) Tj
+0 -14 Td
+(ext{clip\\_fraction}=\\mathbb E[| ho_t-1|>\\epsilon]$.) Tj
+0 -14 Td
+(Source: ppo_training/trainer.py 329-360.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(9\) Networks) Tj
+0 -14 Td
+(Actor: BranchScoringActor) Tj
+0 -14 Td
+(Input is one state concatenated with each branch action vector. Shared MLP, output one logit per) Tj
+0 -14 Td
+(branch.) Tj
+0 -14 Td
+(Critic: StateValueCritic) Tj
+0 -14 Td
+(Input is state, output scalar $V\(s\)$.) Tj
+0 -14 Td
+(Defaults: 2 hidden layers, hidden\\_dim=128.) Tj
+0 -14 Td
+(Source: ppo_training/networks.py 15-97.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(10\) Training loop) Tj
+0 -14 Td
+(Data flow: collect_rollouts     o collect_episode       o RolloutBuffer         o) Tj
+0 -14 Td
+(update_with_entropy.) Tj
+0 -14 Td
+(Within one episode: state/action encode -> actor sample/greedy -> env step -> reward/GAE) Tj
+0 -14 Td
+(storage.) Tj
+0 -14 Td
+(Per update: shuffle all rollout steps, run $    ext{update\\_epochs}$ passes, minibatch updates) Tj
+0 -14 Td
+(for actor + critic.) Tj
+0 -14 Td
+(Source: ppo_training/trainer.py 229-375.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(11\) Evaluation and gaps) Tj
+0 -14 Td
+(Greedy inference gives $J_{     ext{PPO}}=      ext{ppo\\_cost}$; exact gives $J^*=) Tj
+0 -14 Td
+(ext{exact\\_cost}$.) Tj
+0 -14 Td
+(Absolute gap: $\\Delta_{abs}=J_{ ext{PPO}}-J^*$.) Tj
+0 -14 Td
+(Relative gap: $\\Delta_{rel}= rac{\\Delta_{abs}}{|J^*|}$.) Tj
+0 -14 Td
+(If $J^*=0$, define $\\Delta_{rel}=0$ if $J_{     ext{PPO}}=0$, else $\\Delta_{rel}=\\infty$.) Tj
+0 -14 Td
+(Source: ppo_training/evaluate.py 109-114.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(12\) Exact expansion/pruning note) Tj
+0 -14 Td
+(Environment uses immediate branch expansion without branch-and-bound pruning during rollout) Tj
+0 -14 Td
+(actions.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 9 0 R /MediaBox [0 0 595.0 792.0] /Resources 2 0 R /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Length 416 >>
+stream
+BT
+/F1 9 Tf
+0 g
+1 0 0 1 48 747.00 Tm
+(Exact solver pruning remains in search functions and is not part of PPO action logits directly.) Tj
+0 -14 Td
+(Source: coarse_scheduler.py 1241-1253, 1256-1262, 1293/1319.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(If you want a full LaTeX-only reference with theorem-style formatting, I can convert this to a) Tj
+0 -14 Td
+(separate file \(e.g., .tex or .md\) in the next step.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 9 0 R /MediaBox [0 0 595.0 792.0] /Resources 2 0 R /Contents 7 0 R >>
+endobj
+9 0 obj
+<< /Type /Pages /Kids [ 4 0 R 6 0 R 8 0 R ] /Count 3 >>
+endobj
+10 0 obj
+<< /Type /Catalog /Pages 9 0 R >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000089 00000 n 
+0000000154 00000 n 
+0000003158 00000 n 
+0000003266 00000 n 
+0000006350 00000 n 
+0000006458 00000 n 
+0000006925 00000 n 
+0000007033 00000 n 
+0000007104 00000 n 
+trailer
+<< /Size 11 /Root 10 0 R >>
+startxref
+7154
+%%EOF

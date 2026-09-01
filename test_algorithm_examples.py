@@ -8,7 +8,9 @@ from coarse_scheduler import (
     build_vehicle_plan,
     expand_node,
     search_dynamic_codesign_dfs_bb,
+    search_dynamic_codesign_parallel_dfs_bb,
     search_relaxed_dfs_bb,
+    search_relaxed_parallel_dfs_bb,
     search_dfs_bb,
 )
 from main import make_vehicle_plans
@@ -16,14 +18,15 @@ from traffic_map import TrafficMap
 
 
 class AlgorithmExampleTests(unittest.TestCase):
-    def assert_valid_relaxed_schedule(self, result, plans, *, lambda_path):
+    def assert_valid_relaxed_schedule(self, result, plans):
         node = result.best_node
         self.assertTrue(math.isfinite(result.best_g))
         self.assertTrue(all(len(candidates) == 1 for candidates in node.route_candidates))
 
         delay = sum(seg.delay for seg in result.best_schedule)
         self.assertAlmostEqual(delay, node.g_delay)
-        self.assertAlmostEqual(node.g_delay + lambda_path * node.g_path, node.g)
+        for search_node in result.nodes:
+            self.assertAlmostEqual(search_node.g_delay + search_node.g_path, search_node.g)
         self.assertAlmostEqual(node.g, result.best_g)
 
         expected_by_vehicle = {}
@@ -188,7 +191,6 @@ class AlgorithmExampleTests(unittest.TestCase):
 
         result = search_relaxed_dfs_bb(
             plans,
-            lambda_path=1.0,
             branch_and_bound=False,
             verbose=False,
         )
@@ -210,7 +212,6 @@ class AlgorithmExampleTests(unittest.TestCase):
 
         result = search_relaxed_dfs_bb(
             plans,
-            lambda_path=1.0,
             branch_and_bound=True,
             verbose=False,
         )
@@ -249,22 +250,36 @@ class AlgorithmExampleTests(unittest.TestCase):
 
         dynamic = search_dynamic_codesign_dfs_bb(
             plans,
-            lambda_path=1.0,
             branch_and_bound=True,
             verbose=False,
         )
         enumerated = search_relaxed_dfs_bb(
             plans,
-            lambda_path=1.0,
+            branch_and_bound=True,
+            verbose=False,
+        )
+        dynamic_parallel = search_dynamic_codesign_parallel_dfs_bb(
+            plans,
+            frontier_depth=2,
+            max_workers=2,
+            branch_and_bound=True,
+            verbose=False,
+        )
+        enumerated_parallel = search_relaxed_parallel_dfs_bb(
+            plans,
+            max_workers=2,
             branch_and_bound=True,
             verbose=False,
         )
 
-        self.assert_valid_relaxed_schedule(dynamic, plans, lambda_path=1.0)
-        self.assert_valid_relaxed_schedule(enumerated, plans, lambda_path=1.0)
-        self.assertAlmostEqual(dynamic.best_g, enumerated.best_g)
-        self.assertAlmostEqual(dynamic.best_node.g_delay, enumerated.best_node.g_delay)
-        self.assertAlmostEqual(dynamic.best_node.g_path, enumerated.best_node.g_path)
+        self.assert_valid_relaxed_schedule(dynamic, plans)
+        self.assert_valid_relaxed_schedule(enumerated, plans)
+        self.assert_valid_relaxed_schedule(dynamic_parallel, plans)
+        self.assert_valid_relaxed_schedule(enumerated_parallel, plans)
+        for other in (enumerated, dynamic_parallel, enumerated_parallel):
+            self.assertAlmostEqual(dynamic.best_g, other.best_g)
+            self.assertAlmostEqual(dynamic.best_node.g_delay, other.best_node.g_delay)
+            self.assertAlmostEqual(dynamic.best_node.g_path, other.best_node.g_path)
 
         selected_extra = 0.0
         for plan, candidates in zip(plans, dynamic.best_node.route_candidates):

@@ -35,7 +35,6 @@ class CaseSpec:
     map_name: str
     vehicle_requests: tuple[tuple[int, int, int, float], ...]
     t_headway: float
-    lambda_path: float
     max_hops: int
     max_paths: int
 
@@ -127,6 +126,8 @@ def case_is_safe(
     if any(len(plan.route_options) == 0 for plan in plans):
         return False
     stats = load_stats(plans)
+    if max_resource_vehicles <= 0:
+        max_resource_vehicles = float("inf")  # disable resource-vehicle cap
     return (
         stats.option_product <= max_option_product
         and stats.max_potential_vehicles_per_resource <= max_resource_vehicles
@@ -145,6 +146,7 @@ def random_case(
     max_option_product: int,
     max_resource_vehicles: int,
     max_resource_option_visits: int,
+    max_vehicles_per_entrance: int,
     max_attempts: int = 500,
 ) -> tuple[CaseSpec, list[RelaxedVehiclePlan], CaseStats]:
     for _attempt in range(max_attempts):
@@ -160,18 +162,40 @@ def random_case(
             max_paths = 3
 
         ports = list(tmap.port_ids)
+        if (
+            max_vehicles_per_entrance > 0
+            and n_vehicles > len(ports) * max_vehicles_per_entrance
+        ):
+            raise RuntimeError(
+                "max_vehicles_per_entrance is too small for sampled robot count in random_case"
+            )
+        entrance_counts: dict[int, int] = {port: 0 for port in ports}
         requests = []
         for vehicle_id in range(1, n_vehicles + 1):
-            entrance, exit_ = rng.sample(ports, 2)
+            if max_vehicles_per_entrance > 0:
+                available_entrances = [
+                    port
+                    for port, count in entrance_counts.items()
+                    if count < max_vehicles_per_entrance
+                ]
+                if not available_entrances:
+                    raise RuntimeError(
+                        "could not sample entrance assignments under the max vehicles per "
+                        "entrance cap"
+                    )
+                entrance = rng.choice(available_entrances)
+            else:
+                entrance = rng.choice(ports)
+            exit_ = rng.choice(tuple(port for port in ports if port != entrance))
             alpha0 = rng.choice((0.0, 0.5, 1.0, 1.5))
             requests.append((vehicle_id, entrance, exit_, alpha0))
+            entrance_counts[entrance] += 1
 
         spec = CaseSpec(
             case_id=case_id,
             map_name=map_name,
             vehicle_requests=tuple(requests),
             t_headway=rng.choice((0.0, 1.0, 2.0)),
-            lambda_path=1.0,
             max_hops=max_hops,
             max_paths=max_paths,
         )
@@ -192,8 +216,6 @@ def random_case(
 def assert_schedule_valid(
     result: RelaxedSearchResult,
     plans: Sequence[RelaxedVehiclePlan],
-    *,
-    lambda_path: float,
 ) -> None:
     if result.best_idx < 0 or not math.isfinite(result.best_g):
         raise AssertionError("solver did not find a finite complete solution")
@@ -252,7 +274,7 @@ def assert_schedule_valid(
     delay = sum(seg.delay for seg in result.best_schedule)
     if abs(delay - node.g_delay) > 1e-7:
         raise AssertionError(f"delay mismatch: schedule={delay}, node={node.g_delay}")
-    expected_g = node.g_delay + lambda_path * node.g_path
+    expected_g = node.g_delay + node.g_path
     if abs(expected_g - node.g) > 1e-7 or abs(expected_g - result.best_g) > 1e-7:
         raise AssertionError("objective mismatch")
 
@@ -466,7 +488,6 @@ def run_case(
     start = time.perf_counter()
     result = search_dynamic_codesign_parallel_dfs_bb(
         plans,
-        lambda_path=spec.lambda_path,
         frontier_depth=frontier_depth,
         max_workers=max_workers,
         deadline=deadline,
@@ -477,12 +498,11 @@ def run_case(
     elapsed = time.perf_counter() - start
     if has_cutoff(result.log):
         raise AssertionError("dynamic solver hit deadline/max_nodes; result is best-so-far")
-    assert_schedule_valid(result, plans, lambda_path=spec.lambda_path)
+    assert_schedule_valid(result, plans)
 
     if compare_full_path_baseline:
         baseline = search_relaxed_parallel_dfs_bb(
             plans,
-            lambda_path=spec.lambda_path,
             deadline=deadline,
             max_nodes=max_nodes,
             branch_and_bound=True,
@@ -530,7 +550,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cases", type=int, default=30)
     parser.add_argument("--seed", type=int, default=20260618)
     parser.add_argument("--min-robots", type=int, default=2)
-    parser.add_argument("--max-robots", type=int, default=4)
+    parser.add_argument("--max-robots", type=int, default=12)
     parser.add_argument("--road-time", type=float, default=3.0)
     parser.add_argument("--frontier-depth", type=int, default=2)
     parser.add_argument("--max-workers", type=int, default=max(1, min(4, os.cpu_count() or 1)))
@@ -540,8 +560,19 @@ def parse_args() -> argparse.Namespace:
         help="comma-separated map names; default is paper_2x2",
     )
     parser.add_argument("--max-option-product", type=int, default=81)
-    parser.add_argument("--max-resource-vehicles", type=int, default=3)
+    parser.add_argument(
+        "--max-resource-vehicles",
+        type=int,
+        default=0,
+        help="max potential vehicles per resource in generated candidates; <=0 disables this cap",
+    )
     parser.add_argument("--max-resource-option-visits", type=int, default=8)
+    parser.add_argument(
+        "--max-vehicles-per-entrance",
+        type=int,
+        default=0,
+        help="max number of vehicles sharing one entrance in random case generation; 0 means no limit",
+    )
     parser.add_argument("--deadline", type=float, default=None)
     parser.add_argument("--max-nodes", type=int, default=None)
     parser.add_argument("--timing-csv", default="output/random_validation_times.csv")
@@ -686,6 +717,8 @@ def main() -> None:
         raise ValueError("--maps must include at least one map name")
     if args.min_robots < 1 or args.max_robots < args.min_robots:
         raise ValueError("--min-robots/--max-robots must define a valid positive range")
+    if args.max_vehicles_per_entrance < 0:
+        raise ValueError("--max-vehicles-per-entrance must be non-negative")
     timing_path = Path(args.timing_csv)
     timing_path.parent.mkdir(parents=True, exist_ok=True)
     html_dir = Path(args.html_dir)
@@ -706,8 +739,9 @@ def main() -> None:
     print(
         "Caps: "
         f"option_product<={args.max_option_product}, "
-        f"resource_vehicles<={args.max_resource_vehicles}, "
-        f"resource_option_visits<={args.max_resource_option_visits}",
+        f"resource_vehicles<={args.max_resource_vehicles if args.max_resource_vehicles > 0 else 'unlimited'}, "
+        f"resource_option_visits<={args.max_resource_option_visits}, "
+        f"max_vehicles_per_entrance={args.max_vehicles_per_entrance if args.max_vehicles_per_entrance > 0 else 'unlimited'}",
         flush=True,
     )
     print(f"Timing log: {timing_path}", flush=True)
@@ -724,6 +758,7 @@ def main() -> None:
             max_option_product=args.max_option_product,
             max_resource_vehicles=args.max_resource_vehicles,
             max_resource_option_visits=args.max_resource_option_visits,
+            max_vehicles_per_entrance=args.max_vehicles_per_entrance,
         )
         tmap = traffic_map_by_name(spec.map_name)
         html_path = html_dir / f"case_{case_id:02d}.html"

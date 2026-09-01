@@ -1,4 +1,5 @@
 import os
+import argparse
 import sys
 import webbrowser
 from dataclasses import replace
@@ -23,6 +24,7 @@ from coarse_scheduler import (
     write_resource_schedule_svgs,
 )
 from traffic_map import TrafficMap
+from trajectory_conflicts import set_trajectory_conflict_filter
 
 
 EPS = 1e-9
@@ -162,7 +164,7 @@ def shortest_path_delay_upper_bound(
     fixed_plans = apply_entrance_headway(fixed_plans, headway=T_headway)
     result = search_dfs_bb(
         fixed_plans,
-        branch_and_bound=True,
+        branch_and_bound=False,
         verbose=False,
     )
     return result.best_g
@@ -171,14 +173,13 @@ def shortest_path_delay_upper_bound(
 def filter_relaxed_plans_by_upper_bound(
     relaxed_plans,
     *,
-    lambda_path: float,
     J_ub: float,
     keep_min_hop_options: bool = False,
 ):
     """Remove route options that cannot beat a known feasible upper bound.
 
     For each vehicle, the shortest/free-flow baseline path remains available.
-    Any alternative with lambda_path * (T_path - T_shortest) > J_ub cannot
+    Any alternative with (T_path - T_shortest) > J_ub cannot
     appear in a globally better co-design solution because total delay savings
     are bounded above by the feasible incumbent objective J_ub.
 
@@ -199,7 +200,7 @@ def filter_relaxed_plans_by_upper_bound(
             option
             for option, free_time in zip(plan.route_options, free_times)
             if (
-                lambda_path * max(0.0, free_time - base_time) <= J_ub + EPS
+                max(0.0, free_time - base_time) <= J_ub + EPS
                 or (
                     keep_min_hop_options
                     and len(option.intersections) == min_hops
@@ -228,21 +229,29 @@ def open_output_file(path: str | Path) -> bool:
     return True
 
 
-def build_fixed_map(fixed_map: str) -> TrafficMap:
+def build_fixed_map(
+    fixed_map: str,
+    *,
+    intersection_time_scale: float = 1.0,
+) -> TrafficMap:
     if fixed_map == "paper_2x2":
-        return TrafficMap.paper_2x2()
+        return TrafficMap.paper_2x2(
+            intersection_time_scale=intersection_time_scale,
+        )
     if fixed_map == "paper_3x3":
-        return TrafficMap.paper_3x3()
+        return TrafficMap.paper_3x3(
+            intersection_time_scale=intersection_time_scale,
+        )
     raise ValueError(f"unknown fixed_map: {fixed_map}")
 
 
 def default_vehicle_requests(fixed_map: str) -> list[tuple]:
     if fixed_map == "paper_2x2":
         return [
-            # Reproducible case: lambda=1 co-design advantage with only 3 vehicles.
+            # Reproducible co-design advantage with only 3 vehicles.
             #
             # Map: TrafficMap.paper_2x2()
-            # Dt = 3.0, T_headway = 2.0, lambda_path = 1.0
+            # Dt = 3.0, T_headway = 2.0
             # fixed_route_policy = "shortest"
             #
             # fixed-shortest:
@@ -258,7 +267,7 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
             #   delay = 0.000, path_extra = 0.858, J = 0.858
             #
             # This demonstrates a non-shortest path choice reducing total cost
-            # even when lambda_path = 1.0.
+            # when delay and path-extra seconds are added directly.
             # (1, 2, 5, 0.0), #0618 example.
             # (2, 2, 6, 0.0),
             # (3, 6, 4, 0.0),
@@ -283,21 +292,89 @@ def default_vehicle_requests(fixed_map: str) -> list[tuple]:
         return [
             # 3x3 training case: P1->P7 has path choices after the start
             # intersection, not only at the entrance.
-            # (1, 3, 6, 0.0),   
+            (1, 3, 6, 0.0),
             (2, 4, 8, 0.0),   
-            # (3, 12, 5, 0.0),  # I4 -> I3, cross traffic through the middle
+            (3, 12, 5, 0.0),  # I4 -> I3, cross traffic through the middle
+            (4, 8, 12, 0.0),
+            (5, 1, 9, 0.0)
         ]
 
     raise ValueError(f"unknown fixed_map: {fixed_map}")
 
 
-def demo_fixed_map() -> None:
-    fixed_map = "paper_3x3"  # "paper_2x2" or "paper_3x3"
-    tmap = build_fixed_map(fixed_map)
+def demo_fixed_map(
+    *,
+    fixed_map: str = "paper_3x3",
+    fixed_shortest_paths: bool = False,
+    n_robots: int = 3,
+    fixed_route_policy: str = "shortest",
+    enable_path_selection: bool = True,
+) -> None:
+
+    # ======================================================================
+    # ===================== EXPERIMENT PARAMETERS ==========================
+    # All commonly adjusted parameters are centralized here. Check this section first when changing settings.
+    # ======================================================================
+
+    # ----- 1. Timing parameters -----
+    intersection_time_scale = 2.0 # multiple two of org 2*[3/4pi, 2,pi/4] 
+    Dt = 2.0 
+    T_headway = 2.0 
+
+    # ----- 2. Path-planning mode -----
+    if fixed_shortest_paths:
+        enable_path_selection = False
+        fixed_route_policy = "shortest"
+    planning_mode = (
+        "relaxed_path_selection"
+        if enable_path_selection
+        else "fixed_path"
+    )
+    use_baseline_path_filter = False
+    keep_min_hop_route_options = True
+
+    # ----- 3. Decision-tree/search settings -----
+    show_all_branches = True
+    use_parallel_dynamic = False  # True is faster but harder to debug manually.
+    # These limits affect only the HTML viewer; the search result stays complete.
+    if show_all_branches:
+        max_visualized_paths = 30
+        max_visualized_nodes = 2000
+    else:
+        max_visualized_paths = 100
+        max_visualized_nodes = 2000
+
+    # ----- 4. Trajectory-contention model (IMPORTANT) -----
+    # False: original one-runner-per-intersection contention model.
+    # True: exclude whitelisted non-conflicting trajectory pairs.
+    use_trajectory_conflict_filter = False
+    set_trajectory_conflict_filter(use_trajectory_conflict_filter)
+
+    # ----- 5. Parallel-search settings -----
+    parallel_frontier_depth = 2
+    parallel_max_workers = 4
+
+    # ----- 6. Vehicle/sample settings -----
+    if n_robots <= 0:
+        raise ValueError("n-robots must be positive")
+    vehicle_requests = default_vehicle_requests(fixed_map)
+    full_tree_vehicle_count = min(int(n_robots), len(vehicle_requests))
+    if full_tree_vehicle_count <= 0:
+        raise ValueError("no vehicle requests available for this map configuration")
+
+    # ======================================================================
+    # =================== END EXPERIMENT PARAMETERS ========================
+    # ======================================================================
+
+    tmap = build_fixed_map(
+        fixed_map,
+        intersection_time_scale=intersection_time_scale,
+    )
     svg_path = tmap.write_svg(f"output/{tmap.name}_map.svg")
 
     print(f"Map: {tmap.name}")
     print(f"Map drawing: {svg_path}")
+    print(f"Intersection time scale: {intersection_time_scale:.3f}")
     print("Intersections:", tmap.intersection_ids)
     print("Roads/buffers:")
     for line in tmap.describe_roads():
@@ -305,25 +382,6 @@ def demo_fixed_map() -> None:
     print("Entrances/exits:")
     for line in tmap.describe_ports():
         print("  " + line)
-
-    Dt = 3.0
-    T_headway = 2.0
-    enable_path_selection = True
-    planning_mode = (
-        "relaxed_path_selection"
-        if enable_path_selection
-        else "fixed_path"
-    )
-    fixed_route_policy = "shortest"  # "manual_or_shortest" or "shortest"
-    lambda_path = 1.0
-    use_baseline_path_filter = False
-    keep_min_hop_route_options = True
-    show_all_branches = True
-    use_parallel_dynamic = False  # True is faster but harder to debug manually.
-    parallel_frontier_depth = 2
-    parallel_max_workers = 4
-    full_tree_vehicle_count = 3
-    vehicle_requests = default_vehicle_requests(fixed_map)
 
     run_vehicle_requests = (
         vehicle_requests[:full_tree_vehicle_count]
@@ -340,6 +398,10 @@ def demo_fixed_map() -> None:
     )
 
     print()
+    print(
+        "Trajectory contention filter: "
+        f"{'enabled' if use_trajectory_conflict_filter else 'disabled'}"
+    )
     print("Selected OD:")
     print("  entrance " + tmap.describe_port(entrance))
     print("  exit     " + tmap.describe_port(exit_))
@@ -401,7 +463,6 @@ def demo_fixed_map() -> None:
             before_counts = [len(plan.route_options) for plan in relaxed_plans]
             relaxed_plans = filter_relaxed_plans_by_upper_bound(
                 relaxed_plans,
-                lambda_path=lambda_path,
                 J_ub=J_ub,
                 keep_min_hop_options=keep_min_hop_route_options,
             )
@@ -409,7 +470,7 @@ def demo_fixed_map() -> None:
             print()
             print(
                 "Baseline path filter: "
-                f"J_ub={J_ub:.3f}, lambda_path={lambda_path:.3f}, "
+                f"J_ub={J_ub:.3f}, "
                 f"keep_min_hop={keep_min_hop_route_options}, "
                 f"route options {before_counts} -> {after_counts}"
             )
@@ -422,7 +483,7 @@ def demo_fixed_map() -> None:
         )
         print()
         print("Run mode: relaxed path-selection co-design schedule")
-        print(f"lambda_path={lambda_path:.3f}, T_headway={T_headway:.1f}s")
+        print(f"T_headway={T_headway:.1f}s")
         print("Relaxed route options:")
         for plan in relaxed_plans:
             options = [
@@ -437,7 +498,6 @@ def demo_fixed_map() -> None:
         if use_parallel_dynamic:
             result = search_dynamic_codesign_parallel_dfs_bb(
                 relaxed_plans,
-                lambda_path=lambda_path,
                 frontier_depth=parallel_frontier_depth,
                 max_workers=parallel_max_workers,
                 branch_and_bound=not show_all_branches,
@@ -446,11 +506,10 @@ def demo_fixed_map() -> None:
         else:
             result = search_dynamic_codesign_dfs_bb(
                 relaxed_plans,
-                lambda_path=lambda_path,
                 branch_and_bound=not show_all_branches,
                 verbose=True,
             )
-        print(f"  best_J = delay + lambda*path_extra = {result.best_g:.3f}")
+        print(f"  best_J = delay + path_extra = {result.best_g:.3f}")
         print(
             f"  best delay={result.best_node.g_delay:.3f}, "
             f"path_extra={result.best_node.g_path:.3f}"
@@ -461,7 +520,8 @@ def demo_fixed_map() -> None:
             "output/relaxed_interactive_solution.html",
             plans=relaxed_plans,
             tmap=tmap,
-            lambda_path=lambda_path,
+            max_terminal_paths=max_visualized_paths,
+            max_tree_nodes=max_visualized_nodes,
         )
         print(f"  interactive relaxed solution viewer: {interactive_path}")
         open_output_file(interactive_path)
@@ -515,6 +575,7 @@ def demo_fixed_map() -> None:
             plans,
             frontier_depth=1,
             max_workers=2,
+            branch_and_bound=False,
             verbose=True,
         )
     tree_path = write_decision_tree_svg(
@@ -538,7 +599,8 @@ def demo_fixed_map() -> None:
         "output/coarse_interactive_solution.html",
         plans=plans,
         tmap=tmap,
-        lambda_path=lambda_path,
+        max_terminal_paths=max_visualized_paths,
+        max_tree_nodes=max_visualized_nodes,
     )
     panel_path = write_resource_schedule_panel_html(
         schedule_paths,
@@ -565,5 +627,50 @@ def demo_fixed_map() -> None:
         )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the exact baseline solver with fixed-path or co-design mode."
+    )
+    parser.add_argument(
+        "--fix-shortest-paths",
+        action="store_true",
+        help="fix each vehicle to shortest route and solve only scheduling",
+    )
+    parser.add_argument(
+        "--enable-path-selection",
+        action="store_true",
+        help="enable path-and-schedule co-design",
+    )
+    parser.add_argument(
+        "--n-robots",
+        type=int,
+        default=5,
+        help="number of vehicles to include from the built-in request set",
+    )
+    parser.add_argument(
+        "--fixed-route-policy",
+        choices=["shortest", "manual_or_shortest"],
+        default="shortest",
+        help="route selection policy in fixed-path mode",
+    )
+    parser.add_argument(
+        "--fixed-map",
+        choices=["paper_2x2", "paper_3x3"],
+        default="paper_3x3",
+        help="map to run exact experiment",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    demo_fixed_map()
+    args = parse_args()
+    enable_path_selection = args.enable_path_selection
+    if args.fix_shortest_paths:
+        enable_path_selection = False
+    demo_fixed_map(
+        fixed_map=args.fixed_map,
+        fixed_shortest_paths=not enable_path_selection,
+        n_robots=args.n_robots,
+        fixed_route_policy=args.fixed_route_policy,
+        enable_path_selection=enable_path_selection,
+    )

@@ -227,11 +227,15 @@ class TrafficMap:
         auto_ports: bool = True,
         preserve_port_order: bool = False,
         road_ids: Optional[Mapping[Tuple[IntersectionId, IntersectionId], int]] = None,
+        intersection_time_scale: float = 1.0,
         name: str = "manual",
     ) -> None:
         if not coords:
             raise ValueError("coords must contain at least one intersection")
+        if not math.isfinite(intersection_time_scale) or intersection_time_scale <= 0.0:
+            raise ValueError("intersection_time_scale must be finite and positive")
         self.name = name
+        self.intersection_time_scale = float(intersection_time_scale)
         self.coords: Dict[IntersectionId, Tuple[int, int]] = {
             int(i): (int(x), int(y)) for i, (x, y) in coords.items()
         }
@@ -268,6 +272,7 @@ class TrafficMap:
         ports: Optional[Iterable[Tuple[IntersectionId, Direction]]] = None,
         preserve_port_order: bool = False,
         road_ids: Optional[Mapping[Tuple[IntersectionId, IntersectionId], int]] = None,
+        intersection_time_scale: float = 1.0,
         name: str = "manual_grid",
     ) -> "TrafficMap":
         """Build a map from intersection coordinates.
@@ -298,6 +303,7 @@ class TrafficMap:
             auto_ports=auto_ports,
             preserve_port_order=preserve_port_order,
             road_ids=road_ids,
+            intersection_time_scale=intersection_time_scale,
             name=name,
         )
 
@@ -307,6 +313,7 @@ class TrafficMap:
         width: int,
         height: int,
         *,
+        intersection_time_scale: float = 1.0,
         name: Optional[str] = None,
     ) -> "TrafficMap":
         """Create a width x height grid with all perimeter slots as ports.
@@ -322,10 +329,14 @@ class TrafficMap:
             for y in range(height)
             for x in range(width)
         }
-        return cls.from_grid(coords, name=name or f"grid_{width}x{height}")
+        return cls.from_grid(
+            coords,
+            intersection_time_scale=intersection_time_scale,
+            name=name or f"grid_{width}x{height}",
+        )
 
     @classmethod
-    def paper_2x2(cls) -> "TrafficMap":
+    def paper_2x2(cls, *, intersection_time_scale: float = 1.0) -> "TrafficMap":
         """The 2x2 layout with ports ordered counterclockwise around the boundary."""
 
         return cls.from_grid(
@@ -353,11 +364,12 @@ class TrafficMap:
                 (3, 4): 7,
                 (4, 1): 8,
             },
+            intersection_time_scale=intersection_time_scale,
             name="paper_2x2",
         )
 
     @classmethod
-    def paper_3x3(cls) -> "TrafficMap":
+    def paper_3x3(cls, *, intersection_time_scale: float = 1.0) -> "TrafficMap":
         """A fixed 3x3 layout with ports ordered counterclockwise around the boundary."""
 
         return cls.from_grid(
@@ -402,6 +414,7 @@ class TrafficMap:
                 (3, 6): 20,
                 (6, 9): 21,
             },
+            intersection_time_scale=intersection_time_scale,
             name="paper_3x3",
         )
 
@@ -544,6 +557,7 @@ class TrafficMap:
         paths = self.enumerate_intersection_paths(
             entrance, exit, max_hops=max_hops, max_paths=max_paths
         )
+        # S_n(t)
         prefix_choices = self._prefix_next_choices(paths)
 
         options: List[RouteOption] = []
@@ -696,7 +710,7 @@ class TrafficMap:
                 'width="36" height="24" rx="4" fill="white" '
                 'stroke="#777" stroke-width="1.5"/>'
             )
-            parts.append(text((ax + bx) / 2, (ay + by) / 2, f"B{road_id}", size=11, weight="700"))
+            parts.append(text((ax + bx) / 2, (ay + by) / 2, f"L{road_id}", size=11, weight="700"))
 
         port_offset = 0.38
         for port_id in self.port_ids:
@@ -708,7 +722,7 @@ class TrafficMap:
                 f'<rect x="{px - 18:.1f}" y="{py - 14:.1f}" width="36" height="28" '
                 'rx="4" fill="#ffd166" stroke="#b77900" stroke-width="2"/>'
             )
-            parts.append(text(px, py, f"P{port.id}", size=12, weight="700"))
+            parts.append(text(px, py, f"B{port.id}", size=12, weight="700"))
             lx, ly = point(ix + dx * (port_offset + 0.24), iy + dy * (port_offset + 0.24))
             parts.append(text(lx, ly, port.direction, size=11))
 
@@ -755,8 +769,13 @@ class TrafficMap:
             exit_dir=exit_,
             turn=turn,
             route_id=route_id,
-            execution_time=DEFAULT_TURN_DURATION[turn],
-            space_durations=DEFAULT_TURN_SPACE_DURATIONS[turn],
+            execution_time=(
+                self.intersection_time_scale * DEFAULT_TURN_DURATION[turn]
+            ),
+            space_durations=tuple(
+                self.intersection_time_scale * duration
+                for duration in DEFAULT_TURN_SPACE_DURATIONS[turn]
+            ),
         )
 
     def _build_traversals(

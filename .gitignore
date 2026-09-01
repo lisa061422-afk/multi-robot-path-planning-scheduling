@@ -5,6 +5,7 @@ __pycache__/
 
 output/
 tmp/
+tmp_pip_install/
 
 *.mat
 *.csv

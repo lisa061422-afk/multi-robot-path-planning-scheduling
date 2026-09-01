@@ -40,7 +40,6 @@ class PathSelectionScheduler(Protocol):
         self,
         plans: Sequence[RelaxedVehiclePlan],
         *,
-        lambda_path: float = 1.0,
         branch_and_bound: bool = True,
         verbose: bool = True,
     ) -> RelaxedSearchResult:
@@ -76,7 +75,6 @@ class CoarseIntersectionScheduler:
         self,
         plans: Sequence[RelaxedVehiclePlan],
         *,
-        lambda_path: float = 1.0,
         branch_and_bound: bool = True,
         verbose: bool = True,
     ) -> RelaxedSearchResult:
@@ -84,7 +82,6 @@ class CoarseIntersectionScheduler:
 
         return search_dynamic_codesign_dfs_bb(
             plans,
-            lambda_path=lambda_path,
             branch_and_bound=branch_and_bound,
             verbose=verbose,
         )
@@ -111,7 +108,6 @@ class FiveSpaceScheduler:
         self,
         plans: Sequence[RelaxedVehiclePlan],
         *,
-        lambda_path: float = 1.0,
         branch_and_bound: bool = True,
         verbose: bool = True,
     ) -> RelaxedSearchResult:

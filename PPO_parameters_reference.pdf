@@ -1,0 +1,243 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /Name /F1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Font << /F1 1 0 R >> /ProcSet [/PDF /Text] >>
+endobj
+3 0 obj
+<< /Length 2778 >>
+stream
+BT
+/F1 10 Tf
+1 0 0 1 48 747.00 Tm
+0 0 0 rg
+(PPO Parameters Reference \(Current Implementation\)) Tj
+0 -14 Td
+(Generated on 2026-07-23.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(1\) Objective) Tj
+0 -14 Td
+(For each trajectory node l: g = g_delay + g_path.) Tj
+0 -14 Td
+(This is the co-design cost used by PPO transitions.) Tj
+0 -14 Td
+(Source: coarse_scheduler.py \(dynamic nodes\), evaluate.py \(final cost reporting\).) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(2\) What one Action means) Tj
+0 -14 Td
+(At each decision node, PPO chooses one index over current legal branches.) Tj
+0 -14 Td
+(One action corresponds to one branch, and that branch carries the robot scheduling/path-decision effects.) Tj
+0 -14 Td
+(Code references: ppo_training/environment.py \(step/reset\), ppo_training/encoding.py \(encode_actions\).) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(3\) State / Action dimensions) Tj
+0 -14 Td
+(state_dim = 1 + n_robots * \(ROBOT_STATE_SCALARS + 2*\(n_resources+1\) + 3*n_resources + 2*n_ports +) Tj
+0 -14 Td
+(max_route_options\)) Tj
+0 -14 Td
+(ROBOT_STATE_SCALARS = 10.) Tj
+0 -14 Td
+(action_dim = n_robots * \(\(n_resources+1\) + 2*\(n_resources+1\) + ROBOT_ACTION_SCALARS\)) Tj
+0 -14 Td
+(ROBOT_ACTION_SCALARS = 4.) Tj
+0 -14 Td
+(Default EncodingConfig: n_resources=9, n_ports=12.) Tj
+0 -14 Td
+(Source: ppo_training/encoding.py lines 47-67, 130-181.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(4\) Reward definition) Tj
+0 -14 Td
+(DecisionTreeEnv.step\(\): reward = -\(node_next.g - node_cur.g\).) Tj
+0 -14 Td
+(So reward is negative increment of accumulated cost.) Tj
+0 -14 Td
+(Source: ppo_training/environment.py 79-107.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(5\) PPOConfig defaults \(trainer.py\)) Tj
+0 -14 Td
+(discount_factor = 1.0) Tj
+0 -14 Td
+(gae_lambda = 0.95) Tj
+0 -14 Td
+(clip_epsilon = 0.2) Tj
+0 -14 Td
+(entropy_coef = 0.01) Tj
+0 -14 Td
+(value_loss_coef = 0.5) Tj
+0 -14 Td
+(learning_rate = 3e-4) Tj
+0 -14 Td
+(update_epochs = 4) Tj
+0 -14 Td
+(minibatch_size = 64) Tj
+0 -14 Td
+(max_grad_norm = 0.5) Tj
+0 -14 Td
+(max_decisions_per_episode = 200) Tj
+0 -14 Td
+(reward_norm_mode = none \(default\) or absmax; reward_norm_minmax_eps = 1e-12) Tj
+0 -14 Td
+(Source: ppo_training/trainer.py 25-39.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(6\) CLI mapping in train.py) Tj
+0 -14 Td
+(--learning-rate, --update-epochs, --minibatch-size, --entropy-coef, --updates,) Tj
+0 -14 Td
+(--episodes-per-update, --max-decisions, --reward-norm-mode, --lr-schedule, --entropy-schedule) Tj
+0 -14 Td
+(map directly into PPOConfig and optimizer behavior.) Tj
+0 -14 Td
+(Core parser and mapping also include --fixed-case, --fix-shortest-paths, --skip-trivial-cases.) Tj
+0 -14 Td
+(Source: ppo_training/train.py lines 25-135, 337-375, 500-540.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(7\) GAE and normalization) Tj
+0 -14 Td
+(delta_t = r_t + gamma * V\(s_{t+1}\) - V\(s_t\)) Tj
+0 -14 Td
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 7 0 R /MediaBox [0 0 595.0 792.0] /Resources 2 0 R /Contents 3 0 R >>
+endobj
+5 0 obj
+<< /Length 2690 >>
+stream
+BT
+/F1 10 Tf
+1 0 0 1 48 747.00 Tm
+0 0 0 rg
+(gae_t = delta_t + gamma * gae_lambda * gae_{t+1}) Tj
+0 -14 Td
+(value_target_t = gae_t + V\(s_t\)) Tj
+0 -14 Td
+(Advantages are normalized by mean/std before optimization.) Tj
+0 -14 Td
+(Source: ppo_training/rollout_buffer.py 47-63.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(8\) PPO objective terms) Tj
+0 -14 Td
+(ratio = exp\(log_pi_new - log_pi_old\)) Tj
+0 -14 Td
+(unclipped = ratio * A_t) Tj
+0 -14 Td
+(clipped = clip\(ratio, 1-eps, 1+eps\) * A_t) Tj
+0 -14 Td
+(actor_loss = -mean\( min\(unclipped, clipped\) \)) Tj
+0 -14 Td
+(actor objective = actor_loss - entropy_coef * entropy) Tj
+0 -14 Td
+(critic_loss = mean\(\(V\(s_t\)-value_target_t\)^2\)) Tj
+0 -14 Td
+(critic objective = value_loss_coef * critic_loss) Tj
+0 -14 Td
+(Source: ppo_training/trainer.py 329-340, 348-351.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(9\) Diagnostics logged every update) Tj
+0 -14 Td
+(mean_cost, mean_reward, mean_decisions, mean_branches, actor_loss, critic_loss, entropy,) Tj
+0 -14 Td
+(scheduled_entropy, learning_rate, approx_kl, clip_fraction, fixed_greedy_cost, elapsed_seconds.) Tj
+0 -14 Td
+(Source: ppo_training/train.py 550-577.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(10\) Networks) Tj
+0 -14 Td
+(Actor: BranchScoringActor => shared MLP over legal branches, output one logit per branch.) Tj
+0 -14 Td
+(Critic: StateValueCritic => state-to-value MLP scalar output.) Tj
+0 -14 Td
+(Default: 2 hidden layers, hidden_dim=128 for both.) Tj
+0 -14 Td
+(Source: ppo_training/networks.py 15-97.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(11\) Training loop) Tj
+0 -14 Td
+(collect_rollouts -> per-case collect_episode -> store RolloutBuffer -> update_with_entropy.) Tj
+0 -14 Td
+(Each update shuffles all rollout steps and does multiple mini-batch passes.) Tj
+0 -14 Td
+(Source: ppo_training/trainer.py 229-263 and 279-375.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(12\) Evaluation and gap) Tj
+0 -14 Td
+(Greedy inference gives ppo_cost; optional exact solver gives exact_cost.) Tj
+0 -14 Td
+(absolute_gap = ppo_cost - exact_cost.) Tj
+0 -14 Td
+(relative_gap = absolute_gap / abs\(exact_cost\); if exact_cost == 0 then inf when ppo_cost > 0.) Tj
+0 -14 Td
+(Source: ppo_training/evaluate.py 79-122.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(13\) Data generation) Tj
+0 -14 Td
+(ThreeByThreeCaseFactory handles random/fixed cases, initial releases, and optional shortest-path locking.) Tj
+0 -14 Td
+(When --fix-shortest-paths is enabled, each plan has one shortest route and PPO focuses on scheduling only.) Tj
+0 -14 Td
+(Source: ppo_training/cases.py 23-103 and 135-159.) Tj
+0 -14 Td
+() Tj
+0 -14 Td
+(If you need a Chinese version with native characters, I can generate it too) Tj
+0 -14 Td
+(once a font-aware PDF method is added in this environment.) Tj
+0 -14 Td
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 7 0 R /MediaBox [0 0 595.0 792.0] /Resources 2 0 R /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Type /Pages /Kids [ 4 0 R 6 0 R ] /Count 2 >>
+endobj
+8 0 obj
+<< /Type /Catalog /Pages 7 0 R >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000089 00000 n 
+0000000154 00000 n 
+0000002984 00000 n 
+0000003092 00000 n 
+0000005834 00000 n 
+0000005942 00000 n 
+0000006007 00000 n 
+trailer
+<< /Size 9 /Root 8 0 R >>
+startxref
+6056
+%%EOF
